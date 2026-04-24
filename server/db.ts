@@ -695,3 +695,40 @@ export async function getMonthlyRevenueSeries(): Promise<{ label: string; totalV
     dealCount: Number(r.dealCount ?? 0),
   }));
 }
+
+/** Returns all stage win probabilities (from DB, falling back to defaults) */
+export async function getStageProbabilities(): Promise<Record<string, number>> {
+  const db = await getDb();
+  const defaults: Record<string, number> = {
+    lead: 0.10, qualified: 0.25, proposal: 0.45,
+    negotiation: 0.70, closed_won: 1.00, closed_lost: 0.00,
+  };
+  if (!db) return defaults;
+  try {
+    const rows = await db.execute(sql`SELECT stage, probability FROM stage_probabilities`);
+    const result = Array.isArray(rows) ? rows[0] : rows;
+    if (!Array.isArray(result) || result.length === 0) return defaults;
+    const out: Record<string, number> = { ...defaults };
+    for (const r of result as any[]) {
+      out[r.stage] = Number(r.probability);
+    }
+    return out;
+  } catch {
+    return defaults;
+  }
+}
+
+/** Updates a single stage win probability */
+export async function updateStageProbability(
+  stage: string,
+  probability: number,
+  userId: number
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.execute(sql`
+    INSERT INTO stage_probabilities (stage, probability, updatedByUserId)
+    VALUES (${stage}, ${probability}, ${userId})
+    ON DUPLICATE KEY UPDATE probability = ${probability}, updatedByUserId = ${userId}
+  `);
+}

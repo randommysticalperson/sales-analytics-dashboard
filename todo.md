@@ -80,3 +80,12 @@
 - [x] Frontend: Model reference table with formulas and source citations
 - [x] Fix: GBM estimation caps for sparse seed data (< 6 months)
 - [x] Fix: Monthly revenue query using raw SQL to avoid Drizzle DATE_FORMAT issue
+
+## Follow-up Features (Econophysics Page)
+- [ ] DB table `stage_probabilities` to persist admin-overridden stage win rates
+- [ ] tRPC procedures: getStageProbabilities, updateStageProbability (admin only)
+- [ ] Admin stage probability editor UI (inline editable table, admin-only)
+- [ ] Data quality warning banner (< 30 deals or < 6 months history)
+- [ ] Methodology modal with rendered METHODOLOGY.md sections
+- [ ] PDF links in methodology modal (Classical Econophysics + Mathematical Finance)
+- [ ] "Read the methodology" button in Econophysics page header

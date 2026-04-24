@@ -28,6 +28,8 @@ import {
   getAllDealValues,
   getRepRevenueForEntropy,
   getMonthlyRevenueSeries,
+  getStageProbabilities,
+  updateStageProbability,
 } from "./db";
 import {
   boltzmannGibbs,
@@ -286,6 +288,18 @@ export const appRouter = router({
       .input(z.object({ repId: z.number().optional() }))
       .query(({ input }) => getDealsByStage(input.repId)),
   }),
+  // ─── Stage Probabilities ─────────────────────────────────────────────────
+  stageProbabilities: router({
+    get: protectedProcedure.query(() => getStageProbabilities()),
+    update: adminProcedure
+      .input(z.object({
+        stage: z.enum(["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"]),
+        probability: z.number().min(0).max(1),
+      }))
+      .mutation(({ input, ctx }) =>
+        updateStageProbability(input.stage, input.probability, ctx.user.id)
+      ),
+  }),
   // ─── Econophysics Analytics ───────────────────────────────────────────────
   econophysics: router({
     full: protectedProcedure.query(async () => {
@@ -304,7 +318,8 @@ export const appRouter = router({
       const gbmParams = estimateGBMParams(monthlyValues);
       const lastRevenue = monthlyValues[monthlyValues.length - 1] ?? 100000;
       const forecast = monteCarloForecast(lastRevenue, gbmParams.muMonthly, gbmParams.sigmaMonthly, 6, 200);
-      const pipelineValue = binomialPipelineValue(allDeals);
+      const stageProbMap = await getStageProbabilities();
+      const pipelineValue = binomialPipelineValue(allDeals, stageProbMap);
       const tempTrend = economicTemperatureTrend(monthlySeries);
 
       return {

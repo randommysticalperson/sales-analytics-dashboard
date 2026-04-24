@@ -305,7 +305,8 @@ export const STAGE_WIN_PROBABILITIES: Record<string, number> = {
 };
 
 export function binomialPipelineValue(
-  deals: { stage: string; value: number; title: string }[]
+  deals: { stage: string; value: number; title: string }[],
+  stageProbMap?: Record<string, number>
 ): {
   totalExpected: number;
   totalFaceValue: number;
@@ -322,7 +323,7 @@ export function binomialPipelineValue(
 
   for (const deal of deals) {
     const stage = deal.stage.toLowerCase().replace(/ /g, "_");
-    const prob = STAGE_WIN_PROBABILITIES[stage] ?? 0.1;
+    const prob = (stageProbMap ? stageProbMap[stage] : STAGE_WIN_PROBABILITIES[stage]) ?? 0.1;
     if (!stageMap[stage]) stageMap[stage] = { count: 0, faceValue: 0, probability: prob };
     stageMap[stage].count++;
     stageMap[stage].faceValue += deal.value;

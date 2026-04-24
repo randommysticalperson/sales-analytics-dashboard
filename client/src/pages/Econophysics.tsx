@@ -19,16 +19,20 @@
  *    - Binomial pipeline expected value: E[Revenue] = Σ deal_value × P(win|stage)
  */
 
+import { useState } from "react";
 import { trpc } from "@/lib/trpc";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   AreaChart,
   Area,
   BarChart,
   Bar,
-  LineChart,
   Line,
   XAxis,
   YAxis,
@@ -38,9 +42,17 @@ import {
   ResponsiveContainer,
   ReferenceLine,
   ComposedChart,
-  Scatter,
 } from "recharts";
-import { TrendingUp, TrendingDown, Thermometer, Activity, BarChart2, Sigma, Zap, Target } from "lucide-react";
+import { TrendingUp, TrendingDown, Thermometer, Activity, BarChart2, Sigma, Zap, Target, BookOpen, AlertTriangle, ExternalLink, Settings2, Check, X } from "lucide-react";
+import { toast } from "sonner";
+
+// PDF URLs (uploaded to webdev static storage)
+const PDF_URLS = {
+  classicalEconophysics: "/manus-storage/classical_econophysics_36239cd1.pdf",
+  mathematicalFinance: "/manus-storage/mathematical_finance_wallace_durham_3170cced.pdf",
+};
+
+const STAGE_ORDER = ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"];
 
 const fmt = (n: number) =>
   n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` : n >= 1_000 ? `$${(n / 1_000).toFixed(1)}K` : `$${n}`;
@@ -64,6 +76,217 @@ const STAGE_COLORS: Record<string, string> = {
   closed_won: "#34d399",
   closed_lost: "#f87171",
 };
+
+// ─── Data Quality Banner ──────────────────────────────────────────────────────
+function DataQualityBanner({ dealCount, monthCount }: { dealCount: number; monthCount: number }) {
+  const issues: string[] = [];
+  if (dealCount < 30) issues.push(`only ${dealCount} closed deals (30+ recommended for reliable distribution fits)`);
+  if (monthCount < 6) issues.push(`only ${monthCount} months of revenue history (6+ recommended for GBM estimation)`);
+  if (issues.length === 0) return null;
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700 px-4 py-3">
+      <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+      <div>
+        <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Data quality notice</p>
+        <p className="text-xs text-amber-700 dark:text-amber-400 mt-0.5 leading-relaxed">
+          The current dataset has {issues.join(" and ")}. All models will render, but outputs should be treated as
+          illustrative rather than statistically reliable. See the <span className="font-medium">General Caveats</span> section
+          in the methodology document for details.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Methodology Modal ────────────────────────────────────────────────────────
+const METHODOLOGY_MODELS = [
+  {
+    name: "Boltzmann-Gibbs Distribution", formula: "P(m) = (1/T) · exp(−m/T)",
+    source: "Classical Econophysics Ch. 8", pdf: "classicalEconophysics" as const,
+    assumptions: ["Money conservation — total deal value in the system is fixed.", "Random pairwise exchange — deal values arise from agent interactions.", "Equilibrium — the pipeline has reached a statistical steady state.", "Exponential body with a power-law Pareto tail above the 90th percentile."],
+    limitations: ["Fewer than ~30 deals makes the histogram too sparse to test the fit.", "The model is purely descriptive — it says nothing about why deals have the values they do.", "The Pareto threshold is set mechanically at the 90th percentile, not estimated statistically."],
+  },
+  {
+    name: "Economic Temperature (T = M/N)", formula: "T(t) = total deal value / number of deals",
+    source: "Classical Econophysics Ch. 8", pdf: "classicalEconophysics" as const,
+    assumptions: ["Uniform deal mix — all deals are treated as equivalent agents.", "Consistent period length — periods must be the same duration for comparison."],
+    limitations: ["Sensitive to outliers — one very large deal can spike the temperature for a period.", "Does not capture the spread of deal sizes within a period."],
+  },
+  {
+    name: "Gini Coefficient & Lorenz Curve", formula: "G = 1 − 2∫L(x)dx",
+    source: "Classical Econophysics Ch. 8, 13", pdf: "classicalEconophysics" as const,
+    assumptions: ["Reps are comparable agents operating under similar conditions.", "Revenue is the right metric — ignores pipeline value, activity, or deal count."],
+    limitations: ["With fewer than 5–6 reps, the Gini is highly sensitive to individual performance.", "Identical Gini values can arise from very different distributions.", "Does not account for part-time reps or reps who joined mid-period."],
+  },
+  {
+    name: "Shannon / Boltzmann Entropy", formula: "S = −Σ pᵢ · ln(pᵢ)",
+    source: "Classical Econophysics Ch. 1", pdf: "classicalEconophysics" as const,
+    assumptions: ["All reps are active — reps with zero revenue are excluded by convention.", "Revenue shares sum to 1 — deals without an assigned rep are excluded."],
+    limitations: ["Entropy is not directional on its own — track it as a time series to detect trends.", "Normalised entropy depends on the number of active reps."],
+  },
+  {
+    name: "Pareto Tail Analysis", formula: "P(m) ~ m^(−α) for m > m₀",
+    source: "Classical Econophysics Ch. 8", pdf: "classicalEconophysics" as const,
+    assumptions: ["The 90th percentile is a reasonable threshold for the exponential-to-power-law crossover.", "The tail is stable — the model reports a snapshot, not a trend."],
+    limitations: ["Fewer than 20–30 deals makes the 90th percentile threshold unreliable.", "The power-law exponent α is not fitted — this is a descriptive first step only."],
+  },
+  {
+    name: "GBM — Drift & Volatility", formula: "Sₜ = S₀ · exp((μ − σ²/2)t + σWₜ)",
+    source: "Mathematical Finance Ch. 6", pdf: "mathematicalFinance" as const,
+    assumptions: ["Log-normal revenue — revenue is always positive and log-returns are normally distributed.", "Constant drift μ and volatility σ over time.", "Independent monthly increments — no autocorrelation between months."],
+    limitations: ["Fewer than 6 months of data produces unreliable estimates (capped at 300%/yr drift, 200%/yr volatility).", "Cannot model structural breaks — pivots, major hires, or market downturns will invalidate historical parameters.", "Fat-tailed revenue distributions are underestimated by the normal assumption."],
+  },
+  {
+    name: "Monte Carlo Revenue Forecast", formula: "200 GBM paths, 6-month horizon",
+    source: "Mathematical Finance Ch. 6", pdf: "mathematicalFinance" as const,
+    assumptions: ["All GBM assumptions above apply.", "200 paths is sufficient for stable percentile estimates at a 6-month horizon.", "Fixed random seed (42) for reproducibility."],
+    limitations: ["Forecast bands widen rapidly — beyond 6–12 months they become too wide to be informative.", "Does not incorporate external information such as pipeline size or headcount changes.", "This is a statistical scenario tool, not a financial forecast."],
+  },
+  {
+    name: "Binomial Pipeline Expected Value", formula: "E[R] = Σ vᵢ · p(stageᵢ)",
+    source: "Mathematical Finance Ch. 2–3", pdf: "mathematicalFinance" as const,
+    assumptions: ["Stage probabilities are fixed and universal across all deals in that stage.", "Deals are independent — the outcome of one does not affect another.", "Deal value is certain — no negotiation discount is modelled."],
+    limitations: ["Default stage probabilities are industry benchmarks, not your actual historical conversion rates. Calibrate them using the editor.", "Does not account for deal age — a stale deal in Proposal is less likely to close than a fresh one.", "Expected value is a mean — the actual outcome will differ. No confidence interval is provided."],
+  },
+];
+
+function MethodologyModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <BookOpen className="w-5 h-5 text-indigo-600" />
+            Econophysics Methodology
+          </DialogTitle>
+          <DialogDescription>
+            Plain-English explanation of each model's assumptions and limitations. Full derivations in the source PDFs.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-wrap gap-3 pt-1 pb-3 border-b border-border">
+          <a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 transition-colors">
+            <ExternalLink className="w-3.5 h-3.5" />
+            Classical Econophysics — Cockshott, Cottrell, Yakovenko et al.
+          </a>
+          <a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 transition-colors">
+            <ExternalLink className="w-3.5 h-3.5" />
+            Mathematical Finance — Clare Wallace, Durham University
+          </a>
+        </div>
+        <div className="space-y-5 pt-1">
+          {METHODOLOGY_MODELS.map((model) => (
+            <div key={model.name} className="rounded-xl border border-border p-4">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">{model.name}</h3>
+                  <code className="text-xs text-muted-foreground font-mono">{model.formula}</code>
+                </div>
+                <a href={PDF_URLS[model.pdf]} target="_blank" rel="noopener noreferrer" className="shrink-0">
+                  <Badge variant="outline" className="text-[10px] hover:bg-muted cursor-pointer gap-1">
+                    <ExternalLink className="w-2.5 h-2.5" />{model.source}
+                  </Badge>
+                </a>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Assumptions</p>
+                  <ul className="space-y-1">{model.assumptions.map((a, i) => (
+                    <li key={i} className="flex items-start gap-1.5 text-xs text-foreground/80">
+                      <span className="text-emerald-500 mt-0.5 shrink-0">•</span>{a}
+                    </li>
+                  ))}</ul>
+                </div>
+                <div>
+                  <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Limitations</p>
+                  <ul className="space-y-1">{model.limitations.map((l, i) => (
+                    <li key={i} className="flex items-start gap-1.5 text-xs text-foreground/80">
+                      <span className="text-amber-500 mt-0.5 shrink-0">•</span>{l}
+                    </li>
+                  ))}</ul>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="pt-3 border-t border-border">
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            <span className="font-medium text-foreground">General caveat:</span> All models are descriptive and exploratory.
+            They are intended to surface patterns and prompt questions, not to replace human judgment.
+            The quality of every output depends directly on the completeness and accuracy of the underlying CRM data.
+          </p>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Stage Probability Editor (admin only) ────────────────────────────────────
+function StageProbabilityEditor({ stageProbabilities }: { stageProbabilities: Record<string, number> }) {
+  const utils = trpc.useUtils();
+  const updateMutation = trpc.stageProbabilities.update.useMutation({
+    onSuccess: () => { utils.stageProbabilities.get.invalidate(); utils.econophysics.full.invalidate(); toast.success("Stage probability updated"); },
+    onError: (err) => toast.error(err.message),
+  });
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const startEdit = (stage: string, current: number) => { setEditing(stage); setEditValue((current * 100).toFixed(1)); };
+  const commitEdit = (stage: string) => {
+    const val = parseFloat(editValue);
+    if (isNaN(val) || val < 0 || val > 100) { toast.error("Enter a value between 0 and 100"); return; }
+    updateMutation.mutate({ stage: stage as any, probability: val / 100 });
+    setEditing(null);
+  };
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <Settings2 className="w-4 h-4 text-muted-foreground" />
+          <CardTitle className="text-sm font-medium">Stage Win Probabilities</CardTitle>
+          <Badge variant="secondary" className="text-[10px] ml-auto">Admin</Badge>
+        </div>
+        <p className="text-xs text-muted-foreground mt-1">Used in the Binomial Pipeline EV model. Click any value to edit. Defaults are industry benchmarks — calibrate to your actual conversion rates.</p>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div className="space-y-2">
+          {STAGE_ORDER.map((stage) => {
+            const prob = stageProbabilities[stage] ?? 0;
+            const isEditing = editing === stage;
+            const isFixed = stage === "closed_won" || stage === "closed_lost";
+            return (
+              <div key={stage} className="flex items-center gap-3 rounded-lg border border-border px-3 py-2.5">
+                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: STAGE_COLORS[stage] }} />
+                <span className="text-sm font-medium text-foreground w-28 shrink-0">{STAGE_LABELS[stage]}</span>
+                <div className="flex-1">
+                  <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full rounded-full transition-all duration-300" style={{ width: `${prob * 100}%`, backgroundColor: STAGE_COLORS[stage] }} />
+                  </div>
+                </div>
+                {isEditing ? (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Input className="h-7 w-20 text-xs text-right" value={editValue}
+                      onChange={(e) => setEditValue(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") commitEdit(stage); if (e.key === "Escape") setEditing(null); }}
+                      autoFocus />
+                    <span className="text-xs text-muted-foreground">%</span>
+                    <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-600" onClick={() => commitEdit(stage)} disabled={updateMutation.isPending}><Check className="w-3.5 h-3.5" /></Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" onClick={() => setEditing(null)}><X className="w-3.5 h-3.5" /></Button>
+                  </div>
+                ) : (
+                  <button className={`text-sm font-semibold w-14 text-right shrink-0 transition-colors ${ isFixed ? "text-muted-foreground cursor-default" : "text-foreground hover:text-indigo-600 cursor-pointer" }`}
+                    onClick={() => !isFixed && startEdit(stage, prob)} title={isFixed ? "Fixed value" : "Click to edit"}>
+                    {pct(prob)}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 // ─── Metric Card ─────────────────────────────────────────────────────────────
 function MetricCard({
@@ -136,9 +359,14 @@ function ChartTooltip({ active, payload, label, prefix = "$" }: any) {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function Econophysics() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const [methodologyOpen, setMethodologyOpen] = useState(false);
+
   const { data, isLoading } = trpc.econophysics.full.useQuery(undefined, {
     staleTime: 60_000,
   });
+  const { data: stageProbData } = trpc.stageProbabilities.get.useQuery(undefined, { staleTime: 30_000 });
 
   if (isLoading) {
     return (
@@ -159,6 +387,10 @@ export default function Econophysics() {
   if (!data) return null;
 
   const { boltzmannGibbs, gini, entropy, gbmParams, forecast, pipelineValue, temperatureTrend, repRevenues, monthlySeries } = data;
+
+  // ── Data quality checks ──
+  const dealCount = boltzmannGibbs.histogram.reduce((s: number, b: any) => s + b.count, 0);
+  const monthCount = monthlySeries.filter((m: any) => m.totalValue > 0).length;
 
   // ── Lorenz curve data ──
   const lorenzData = gini.lorenz.filter((_, i) => i % Math.max(1, Math.floor(gini.lorenz.length / 20)) === 0).map(p => ({
@@ -205,15 +437,29 @@ export default function Econophysics() {
   return (
     <div className="p-6 space-y-8 max-w-7xl">
       {/* ── Page Header ── */}
-      <div>
-        <h1 className="text-xl font-bold text-foreground mb-1">Econophysics Analytics</h1>
-        <p className="text-sm text-muted-foreground max-w-3xl">
-          Statistical physics and mathematical finance models applied to CRM data. Based on{" "}
-          <span className="font-medium text-foreground">Classical Econophysics</span> (Cockshott, Cottrell, Yakovenko et al.)
-          and{" "}
-          <span className="font-medium text-foreground">Mathematical Finance</span> (Wallace, Durham University).
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-bold text-foreground mb-1">Econophysics Analytics</h1>
+          <p className="text-sm text-muted-foreground max-w-3xl">
+            Statistical physics and mathematical finance models applied to CRM data. Based on{" "}
+            <a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer"
+              className="font-medium text-foreground hover:text-indigo-600 inline-flex items-center gap-0.5 transition-colors">
+              Classical Econophysics<ExternalLink className="w-3 h-3 ml-0.5" />
+            </a>{" "}(Cockshott, Cottrell, Yakovenko et al.) and{" "}
+            <a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer"
+              className="font-medium text-foreground hover:text-indigo-600 inline-flex items-center gap-0.5 transition-colors">
+              Mathematical Finance<ExternalLink className="w-3 h-3 ml-0.5" />
+            </a>{" "}(Wallace, Durham University).
+          </p>
+        </div>
+        <Button variant="outline" size="sm" className="shrink-0 gap-1.5" onClick={() => setMethodologyOpen(true)}>
+          <BookOpen className="w-3.5 h-3.5" />
+          Read methodology
+        </Button>
       </div>
+
+      {/* ── Data Quality Banner ── */}
+      <DataQualityBanner dealCount={dealCount} monthCount={monthCount} />
 
       {/* ── Top KPI Cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -511,7 +757,7 @@ export default function Econophysics() {
         </Card>
       </div>
 
-      {/* ── Section 5: Economic Temperature Trend ── */}
+      {/* ── Section 5: Economic Temperature Trend + Stage Probability Editor ── */}
       <div>
         <SectionHeader
           title="Economic Temperature Trend"
@@ -561,6 +807,15 @@ export default function Econophysics() {
               </ResponsiveContainer>
             </CardContent>
           </Card>
+          {isAdmin && stageProbData ? (
+            <StageProbabilityEditor stageProbabilities={stageProbData} />
+          ) : (
+            <Card className="flex items-center justify-center min-h-[200px]">
+              <p className="text-xs text-muted-foreground text-center px-6">
+                Stage win probability calibration is available to administrators only.
+              </p>
+            </Card>
+          )}
         </div>
       </div>
 
@@ -585,55 +840,58 @@ export default function Econophysics() {
                   <td className="py-2 pr-4 font-medium">Boltzmann-Gibbs</td>
                   <td className="py-2 pr-4 font-mono text-muted-foreground">P(m) = (1/T)·e^(−m/T)</td>
                   <td className="py-2 pr-4">T = {fmt(boltzmannGibbs.temperature)}, λ = {boltzmannGibbs.lambda.toFixed(6)}</td>
-                  <td className="py-2 text-muted-foreground">Classical Econophysics Ch. 8</td>
+                  <td className="py-2"><a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Classical Econophysics Ch. 8<ExternalLink className="w-2.5 h-2.5" /></a></td>
                 </tr>
                 <tr>
                   <td className="py-2 pr-4 font-medium">Gini Coefficient</td>
                   <td className="py-2 pr-4 font-mono text-muted-foreground">G = 1 − 2∫L(x)dx</td>
                   <td className="py-2 pr-4">G = {gini.gini.toFixed(3)}</td>
-                  <td className="py-2 text-muted-foreground">Classical Econophysics Ch. 8, 13</td>
+                  <td className="py-2"><a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Classical Econophysics Ch. 8, 13<ExternalLink className="w-2.5 h-2.5" /></a></td>
                 </tr>
                 <tr>
                   <td className="py-2 pr-4 font-medium">Boltzmann Entropy</td>
                   <td className="py-2 pr-4 font-mono text-muted-foreground">S = −Σ p_i·ln(p_i)</td>
                   <td className="py-2 pr-4">S = {entropy.entropy} (S/S_max = {pct(entropy.normalizedEntropy)})</td>
-                  <td className="py-2 text-muted-foreground">Classical Econophysics Ch. 1</td>
+                  <td className="py-2"><a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Classical Econophysics Ch. 1<ExternalLink className="w-2.5 h-2.5" /></a></td>
                 </tr>
                 <tr>
                   <td className="py-2 pr-4 font-medium">GBM (drift)</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">μ = E[ln(S_t/S_{"{t-1}"})]·12 + σ²/2</td>
+                  <td className="py-2 pr-4 font-mono text-muted-foreground">μ = E[ln(Sₜ/Sₜ₋₁)]·12 + σ²/2</td>
                   <td className="py-2 pr-4">μ = {(gbmParams.mu * 100).toFixed(2)}%/yr</td>
-                  <td className="py-2 text-muted-foreground">Mathematical Finance Ch. 6</td>
+                  <td className="py-2"><a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Mathematical Finance Ch. 6<ExternalLink className="w-2.5 h-2.5" /></a></td>
                 </tr>
                 <tr>
                   <td className="py-2 pr-4 font-medium">GBM (volatility)</td>
                   <td className="py-2 pr-4 font-mono text-muted-foreground">σ = std(log-returns)·√12</td>
                   <td className="py-2 pr-4">σ = {(gbmParams.sigma * 100).toFixed(2)}%/yr</td>
-                  <td className="py-2 text-muted-foreground">Mathematical Finance Ch. 6</td>
+                  <td className="py-2"><a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Mathematical Finance Ch. 6<ExternalLink className="w-2.5 h-2.5" /></a></td>
                 </tr>
                 <tr>
                   <td className="py-2 pr-4 font-medium">Monte Carlo (GBM)</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">S_t = S_0·exp((μ−σ²/2)t + σW_t)</td>
-                  <td className="py-2 pr-4">E[S_6] = {fmt(forecast.expectedFinal)}</td>
-                  <td className="py-2 text-muted-foreground">Mathematical Finance Ch. 6</td>
+                  <td className="py-2 pr-4 font-mono text-muted-foreground">Sₜ = S₀·exp((μ−σ²/2)t + σWₜ)</td>
+                  <td className="py-2 pr-4">E[S₆] = {fmt(forecast.expectedFinal)}</td>
+                  <td className="py-2"><a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Mathematical Finance Ch. 6<ExternalLink className="w-2.5 h-2.5" /></a></td>
                 </tr>
                 <tr>
                   <td className="py-2 pr-4 font-medium">Binomial Pipeline</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">E[R] = Σ v_i·p(stage_i)</td>
+                  <td className="py-2 pr-4 font-mono text-muted-foreground">E[R] = Σ vᵢ·p(stageᵢ)</td>
                   <td className="py-2 pr-4">E[R] = {fmt(pipelineValue.totalExpected)}</td>
-                  <td className="py-2 text-muted-foreground">Mathematical Finance Ch. 2–3</td>
+                  <td className="py-2"><a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Mathematical Finance Ch. 2–3<ExternalLink className="w-2.5 h-2.5" /></a></td>
                 </tr>
                 <tr>
                   <td className="py-2 pr-4 font-medium">Pareto Tail</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">P(m) ~ m^(−α) for m &gt; m_0</td>
+                  <td className="py-2 pr-4 font-mono text-muted-foreground">P(m) ~ m^(−α) for m &gt; m₀</td>
                   <td className="py-2 pr-4">Top {pct(boltzmannGibbs.paretoFraction)} → {pct(boltzmannGibbs.paretoRevenueShare)} of revenue</td>
-                  <td className="py-2 text-muted-foreground">Classical Econophysics Ch. 8</td>
+                  <td className="py-2"><a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Classical Econophysics Ch. 8<ExternalLink className="w-2.5 h-2.5" /></a></td>
                 </tr>
               </tbody>
             </table>
           </div>
         </CardContent>
       </Card>
+
+      {/* ── Methodology Modal ── */}
+      <MethodologyModal open={methodologyOpen} onClose={() => setMethodologyOpen(false)} />
     </div>
   );
 }

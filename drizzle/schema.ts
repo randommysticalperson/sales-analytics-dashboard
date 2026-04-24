@@ -126,3 +126,19 @@ export const activities = mysqlTable("activities", {
 });
 
 export type Activity = typeof activities.$inferSelect;
+// ─── Stage Win Probabilities (admin-configurable) ────────────────────────────
+export const stageProbabilities = mysqlTable("stage_probabilities", {
+  id: int("id").autoincrement().primaryKey(),
+  stage: mysqlEnum("stage", [
+    "lead",
+    "qualified",
+    "proposal",
+    "negotiation",
+    "closed_won",
+    "closed_lost",
+  ]).notNull().unique(),
+  probability: decimal("probability", { precision: 5, scale: 4 }).notNull(), // 0.0000–1.0000
+  updatedByUserId: int("updatedByUserId"),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type StageProbability = typeof stageProbabilities.$inferSelect;
