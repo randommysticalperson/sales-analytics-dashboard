@@ -82,10 +82,28 @@
 - [x] Fix: Monthly revenue query using raw SQL to avoid Drizzle DATE_FORMAT issue
 
 ## Follow-up Features (Econophysics Page)
-- [ ] DB table `stage_probabilities` to persist admin-overridden stage win rates
-- [ ] tRPC procedures: getStageProbabilities, updateStageProbability (admin only)
-- [ ] Admin stage probability editor UI (inline editable table, admin-only)
-- [ ] Data quality warning banner (< 30 deals or < 6 months history)
-- [ ] Methodology modal with rendered METHODOLOGY.md sections
-- [ ] PDF links in methodology modal (Classical Econophysics + Mathematical Finance)
-- [ ] "Read the methodology" button in Econophysics page header
+- [x] DB table `stage_probabilities` to persist admin-overridden stage win rates
+- [x] tRPC procedures: getStageProbabilities, updateStageProbability (admin only)
+- [x] Admin stage probability editor UI (inline editable table, admin-only)
+- [x] Data quality warning banner (< 30 deals or < 6 months history)
+- [x] Methodology modal with rendered METHODOLOGY.md sections
+- [x] PDF links in methodology modal (Classical Econophysics + Mathematical Finance)
+- [x] "Read the methodology" button in Econophysics page header
+
+## What-If Analysis Tool
+
+- [ ] Client-side computation engine: port all 8 model formulas to TypeScript (no server round-trips)
+- [ ] WhatIfPanel component: collapsible sidebar/drawer with parameter sliders and inputs
+- [ ] GBM parameters: drift μ slider (−100% to +500%/yr), volatility σ slider (0–300%/yr)
+- [ ] Monte Carlo: forecast horizon slider (1–24 months), number of paths selector (50/100/200/500)
+- [ ] Stage probabilities: inline sliders for Lead, Qualified, Proposal, Negotiation (0–100%)
+- [ ] Deal assumptions: average deal value input, total deal count input
+- [ ] Pareto threshold: percentile slider (80th–99th) for Pareto tail cutoff
+- [ ] Economic temperature: override T directly or derive from deal value/count inputs
+- [ ] Live KPI cards: all 8 KPI values update instantly as parameters change
+- [ ] Live charts: GBM Monte Carlo fan chart, Binomial pipeline bar, Boltzmann histogram all re-render on parameter change
+- [ ] Baseline vs. what-if comparison: show delta badges (▲/▼) on each KPI card vs. the server-computed baseline
+- [ ] Reset to baseline button: restores all parameters to server-computed values
+- [ ] Scenario presets: "Optimistic", "Pessimistic", "Conservative" preset buttons
+- [ ] What-If mode indicator: clear visual signal when the page is showing what-if vs. live data
+- [ ] Vitest tests for the client-side computation engine

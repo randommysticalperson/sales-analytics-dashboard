@@ -1,25 +1,4 @@
-/**
- * Econophysics Analytics Page
- *
- * Applies models from two sources:
- *
- * 1. Classical Econophysics (Cockshott, Cottrell, Michaelson, Wright, Yakovenko)
- *    Ch. 8 — Statistical Mechanics of Money (Dragulescu & Yakovenko):
- *    - Boltzmann-Gibbs distribution: P(m) = (1/T)·exp(-m/T), T = mean deal value
- *    - Gini coefficient & Lorenz curve for revenue concentration
- *    - Shannon/Boltzmann entropy of revenue distribution
- *    - Economic temperature trend T(t) = M(t)/N(t)
- *    - Pareto tail: top ~10% of deals follow power-law, not exponential
- *
- * 2. Mathematical Finance (Clare Wallace, Durham University)
- *    Ch. 6 — Black-Scholes / GBM:
- *    - Geometric Brownian Motion: S_t = S_0·exp((μ-σ²/2)t + σW_t)
- *    - Drift μ and volatility σ estimated from log-returns of monthly revenue
- *    - Monte Carlo forecast: 200 paths, 6-month horizon
- *    - Binomial pipeline expected value: E[Revenue] = Σ deal_value × P(win|stage)
- */
-
-import { useState } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,53 +7,45 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-  ReferenceLine,
-  ComposedChart,
+  AreaChart, Area, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid,
+  Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart,
 } from "recharts";
-import { TrendingUp, TrendingDown, Thermometer, Activity, BarChart2, Sigma, Zap, Target, BookOpen, AlertTriangle, ExternalLink, Settings2, Check, X } from "lucide-react";
+import {
+  TrendingUp, TrendingDown, Thermometer, Activity, BarChart2, Sigma,
+  Zap, Target, BookOpen, AlertTriangle, ExternalLink, Settings2, Check, X,
+  SlidersHorizontal, ChevronRight, ChevronLeft,
+} from "lucide-react";
 import { toast } from "sonner";
+import { WhatIfPanel } from "@/components/crm/WhatIfPanel";
+import {
+  boltzmannGibbs as computeBoltzmann,
+  giniAndLorenz as computeGini,
+  revenueEntropy as computeEntropy,
+  monteCarloForecast as computeMonteCarlo,
+  binomialPipelineValue as computeBinomial,
+  economicTemperatureTrend as computeTempTrend,
+  WhatIfParams,
+  DEFAULT_STAGE_PROBS,
+} from "@/lib/econophysicsEngine";
 
-// PDF URLs (uploaded to webdev static storage)
+// ─── Constants ────────────────────────────────────────────────────────────────
 const PDF_URLS = {
   classicalEconophysics: "/manus-storage/classical_econophysics_36239cd1.pdf",
   mathematicalFinance: "/manus-storage/mathematical_finance_wallace_durham_3170cced.pdf",
 };
-
 const STAGE_ORDER = ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"];
-
 const fmt = (n: number) =>
-  n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` : n >= 1_000 ? `$${(n / 1_000).toFixed(1)}K` : `$${n}`;
-
+  n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(2)}M` : n >= 1_000 ? `$${(n / 1_000).toFixed(1)}K` : `$${n.toFixed(0)}`;
 const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
-
 const STAGE_LABELS: Record<string, string> = {
-  lead: "Lead",
-  qualified: "Qualified",
-  proposal: "Proposal",
-  negotiation: "Negotiation",
-  closed_won: "Closed Won",
-  closed_lost: "Closed Lost",
+  lead: "Lead", qualified: "Qualified", proposal: "Proposal",
+  negotiation: "Negotiation", closed_won: "Closed Won", closed_lost: "Closed Lost",
 };
-
 const STAGE_COLORS: Record<string, string> = {
-  lead: "#94a3b8",
-  qualified: "#60a5fa",
-  proposal: "#a78bfa",
-  negotiation: "#f59e0b",
-  closed_won: "#34d399",
-  closed_lost: "#f87171",
+  lead: "#94a3b8", qualified: "#60a5fa", proposal: "#a78bfa",
+  negotiation: "#f59e0b", closed_won: "#34d399", closed_lost: "#f87171",
 };
 
 // ─── Data Quality Banner ──────────────────────────────────────────────────────
@@ -95,6 +66,39 @@ function DataQualityBanner({ dealCount, monthCount }: { dealCount: number; month
         </p>
       </div>
     </div>
+  );
+}
+
+// ─── What-If Mode Banner ──────────────────────────────────────────────────────
+function WhatIfModeBanner({ onReset }: { onReset: () => void }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-indigo-300 bg-indigo-50 dark:bg-indigo-950/40 dark:border-indigo-700 px-4 py-2.5">
+      <div className="flex items-center gap-2">
+        <SlidersHorizontal className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
+        <p className="text-sm font-medium text-indigo-800 dark:text-indigo-300">
+          What-if mode — charts and KPIs reflect hypothetical parameters, not live data
+        </p>
+      </div>
+      <Button size="sm" variant="outline" className="text-xs h-7 shrink-0 border-indigo-300 text-indigo-700 hover:bg-indigo-100 dark:border-indigo-700 dark:text-indigo-300" onClick={onReset}>
+        Reset to baseline
+      </Button>
+    </div>
+  );
+}
+
+// ─── Delta Badge ──────────────────────────────────────────────────────────────
+function DeltaBadge({ current, baseline, isPercent = false }: { current: number; baseline: number; isPercent?: boolean }) {
+  if (baseline === 0 || Math.abs(current - baseline) / Math.abs(baseline) < 0.005) return null;
+  const delta = current - baseline;
+  const relDelta = (delta / Math.abs(baseline)) * 100;
+  const positive = delta > 0;
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-[10px] font-semibold px-1 py-0.5 rounded ml-1 ${
+      positive ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
+               : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400"
+    }`}>
+      {positive ? "▲" : "▼"} {Math.abs(isPercent ? delta * 100 : relDelta).toFixed(1)}{isPercent ? "pp" : "%"}
+    </span>
   );
 }
 
@@ -121,102 +125,99 @@ const METHODOLOGY_MODELS = [
   {
     name: "Shannon / Boltzmann Entropy", formula: "S = −Σ pᵢ · ln(pᵢ)",
     source: "Classical Econophysics Ch. 1", pdf: "classicalEconophysics" as const,
-    assumptions: ["All reps are active — reps with zero revenue are excluded by convention.", "Revenue shares sum to 1 — deals without an assigned rep are excluded."],
-    limitations: ["Entropy is not directional on its own — track it as a time series to detect trends.", "Normalised entropy depends on the number of active reps."],
+    assumptions: ["Revenue shares are treated as probabilities over discrete agents.", "Each rep is an independent 'microstate'."],
+    limitations: ["Sensitive to the number of reps — more reps mechanically raises maximum entropy.", "Does not distinguish between different types of revenue concentration."],
   },
   {
     name: "Pareto Tail Analysis", formula: "P(m) ~ m^(−α) for m > m₀",
     source: "Classical Econophysics Ch. 8", pdf: "classicalEconophysics" as const,
-    assumptions: ["The 90th percentile is a reasonable threshold for the exponential-to-power-law crossover.", "The tail is stable — the model reports a snapshot, not a trend."],
-    limitations: ["Fewer than 20–30 deals makes the 90th percentile threshold unreliable.", "The power-law exponent α is not fitted — this is a descriptive first step only."],
+    assumptions: ["The top deals follow a power-law rather than the exponential Boltzmann-Gibbs body.", "The threshold m₀ is set at the 90th percentile (adjustable in what-if mode)."],
+    limitations: ["With fewer than 30 deals, the tail contains only 3 data points — insufficient for a reliable power-law fit.", "The α exponent is not estimated here; only the tail share is reported."],
   },
   {
-    name: "GBM — Drift & Volatility", formula: "Sₜ = S₀ · exp((μ − σ²/2)t + σWₜ)",
+    name: "Geometric Brownian Motion (GBM)", formula: "dS = μS dt + σS dW",
     source: "Mathematical Finance Ch. 6", pdf: "mathematicalFinance" as const,
-    assumptions: ["Log-normal revenue — revenue is always positive and log-returns are normally distributed.", "Constant drift μ and volatility σ over time.", "Independent monthly increments — no autocorrelation between months."],
-    limitations: ["Fewer than 6 months of data produces unreliable estimates (capped at 300%/yr drift, 200%/yr volatility).", "Cannot model structural breaks — pivots, major hires, or market downturns will invalidate historical parameters.", "Fat-tailed revenue distributions are underestimated by the normal assumption."],
+    assumptions: ["Revenue follows a log-normal process — log-returns are i.i.d. normal.", "Drift μ and volatility σ are constant over the forecast horizon.", "No jumps, regime changes, or seasonal effects."],
+    limitations: ["GBM is a continuous-time model applied to monthly discrete data.", "With fewer than 6 months of history, parameter estimates are unreliable.", "Log-normal assumption breaks down when revenue can be zero or negative."],
   },
   {
-    name: "Monte Carlo Revenue Forecast", formula: "200 GBM paths, 6-month horizon",
+    name: "Monte Carlo GBM Forecast", formula: "Sₜ = S₀ · exp((μ−σ²/2)t + σWₜ)",
     source: "Mathematical Finance Ch. 6", pdf: "mathematicalFinance" as const,
-    assumptions: ["All GBM assumptions above apply.", "200 paths is sufficient for stable percentile estimates at a 6-month horizon.", "Fixed random seed (42) for reproducibility."],
-    limitations: ["Forecast bands widen rapidly — beyond 6–12 months they become too wide to be informative.", "Does not incorporate external information such as pipeline size or headcount changes.", "This is a statistical scenario tool, not a financial forecast."],
+    assumptions: ["Each simulated path is an independent realisation of the GBM process.", "The seeded pseudo-random generator (LCG + Box-Muller) produces reproducible results.", "200 paths are sufficient to estimate the 10th–90th percentile band."],
+    limitations: ["All paths share the same μ and σ — no parameter uncertainty is modelled.", "The forecast ignores known future events (product launches, seasonality, churn)."],
   },
   {
     name: "Binomial Pipeline Expected Value", formula: "E[R] = Σ vᵢ · p(stageᵢ)",
     source: "Mathematical Finance Ch. 2–3", pdf: "mathematicalFinance" as const,
-    assumptions: ["Stage probabilities are fixed and universal across all deals in that stage.", "Deals are independent — the outcome of one does not affect another.", "Deal value is certain — no negotiation discount is modelled."],
-    limitations: ["Default stage probabilities are industry benchmarks, not your actual historical conversion rates. Calibrate them using the editor.", "Does not account for deal age — a stale deal in Proposal is less likely to close than a fresh one.", "Expected value is a mean — the actual outcome will differ. No confidence interval is provided."],
+    assumptions: ["Each deal is an independent Bernoulli trial — win or lose.", "Stage win probabilities are constant across all deals in the same stage.", "Deal values are fixed — no upsell or downsell modelled."],
+    limitations: ["Default stage probabilities (10%, 25%, 45%, 70%) are industry benchmarks, not your actuals.", "Ignores deal age, rep quality, and competitive dynamics.", "Independence assumption breaks down when deals share the same account or rep."],
   },
 ];
 
 function MethodologyModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <BookOpen className="w-5 h-5 text-indigo-600" />
-            Econophysics Methodology
-          </DialogTitle>
-          <DialogDescription>
-            Plain-English explanation of each model's assumptions and limitations. Full derivations in the source PDFs.
+    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+      <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col gap-0 p-0">
+        <DialogHeader className="px-6 pt-5 pb-3 shrink-0">
+          <DialogTitle className="text-base font-semibold">Model Methodology</DialogTitle>
+          <DialogDescription className="text-xs text-muted-foreground">
+            Assumptions and limitations for all 8 econophysics models used on this page.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex flex-wrap gap-3 pt-1 pb-3 border-b border-border">
+        <div className="flex flex-wrap gap-3 px-6 pb-3 border-b border-border shrink-0">
           <a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 transition-colors">
-            <ExternalLink className="w-3.5 h-3.5" />
-            Classical Econophysics — Cockshott, Cottrell, Yakovenko et al.
+            <ExternalLink className="w-3.5 h-3.5" />Classical Econophysics — Cockshott, Cottrell, Yakovenko et al.
           </a>
           <a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 transition-colors">
-            <ExternalLink className="w-3.5 h-3.5" />
-            Mathematical Finance — Clare Wallace, Durham University
+            <ExternalLink className="w-3.5 h-3.5" />Mathematical Finance — Clare Wallace, Durham University
           </a>
         </div>
-        <div className="space-y-5 pt-1">
-          {METHODOLOGY_MODELS.map((model) => (
-            <div key={model.name} className="rounded-xl border border-border p-4">
-              <div className="flex items-start justify-between gap-3 mb-3">
-                <div>
-                  <h3 className="text-sm font-semibold text-foreground">{model.name}</h3>
-                  <code className="text-xs text-muted-foreground font-mono">{model.formula}</code>
+        <ScrollArea className="flex-1 px-6 py-4">
+          <div className="space-y-4">
+            {METHODOLOGY_MODELS.map((model) => (
+              <div key={model.name} className="rounded-xl border border-border p-4">
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground">{model.name}</h3>
+                    <code className="text-xs text-muted-foreground font-mono">{model.formula}</code>
+                  </div>
+                  <a href={PDF_URLS[model.pdf]} target="_blank" rel="noopener noreferrer" className="shrink-0">
+                    <Badge variant="outline" className="text-[10px] hover:bg-muted cursor-pointer gap-1">
+                      <ExternalLink className="w-2.5 h-2.5" />{model.source}
+                    </Badge>
+                  </a>
                 </div>
-                <a href={PDF_URLS[model.pdf]} target="_blank" rel="noopener noreferrer" className="shrink-0">
-                  <Badge variant="outline" className="text-[10px] hover:bg-muted cursor-pointer gap-1">
-                    <ExternalLink className="w-2.5 h-2.5" />{model.source}
-                  </Badge>
-                </a>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Assumptions</p>
+                    <ul className="space-y-1">{model.assumptions.map((a, i) => (
+                      <li key={i} className="flex items-start gap-1.5 text-xs text-foreground/80">
+                        <span className="text-emerald-500 mt-0.5 shrink-0">•</span>{a}
+                      </li>
+                    ))}</ul>
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Limitations</p>
+                    <ul className="space-y-1">{model.limitations.map((l, i) => (
+                      <li key={i} className="flex items-start gap-1.5 text-xs text-foreground/80">
+                        <span className="text-amber-500 mt-0.5 shrink-0">•</span>{l}
+                      </li>
+                    ))}</ul>
+                  </div>
+                </div>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Assumptions</p>
-                  <ul className="space-y-1">{model.assumptions.map((a, i) => (
-                    <li key={i} className="flex items-start gap-1.5 text-xs text-foreground/80">
-                      <span className="text-emerald-500 mt-0.5 shrink-0">•</span>{a}
-                    </li>
-                  ))}</ul>
-                </div>
-                <div>
-                  <p className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide mb-1.5">Limitations</p>
-                  <ul className="space-y-1">{model.limitations.map((l, i) => (
-                    <li key={i} className="flex items-start gap-1.5 text-xs text-foreground/80">
-                      <span className="text-amber-500 mt-0.5 shrink-0">•</span>{l}
-                    </li>
-                  ))}</ul>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="pt-3 border-t border-border">
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            <span className="font-medium text-foreground">General caveat:</span> All models are descriptive and exploratory.
-            They are intended to surface patterns and prompt questions, not to replace human judgment.
-            The quality of every output depends directly on the completeness and accuracy of the underlying CRM data.
-          </p>
-        </div>
+            ))}
+          </div>
+          <div className="pt-4 border-t border-border mt-4">
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              <span className="font-medium text-foreground">General caveat:</span> All models are descriptive and exploratory.
+              They are intended to surface patterns and prompt questions, not to replace human judgment.
+              The quality of every output depends directly on the completeness and accuracy of the underlying CRM data.
+            </p>
+          </div>
+        </ScrollArea>
       </DialogContent>
     </Dialog>
   );
@@ -250,33 +251,38 @@ function StageProbabilityEditor({ stageProbabilities }: { stageProbabilities: Re
       </CardHeader>
       <CardContent className="pt-0">
         <div className="space-y-2">
-          {STAGE_ORDER.map((stage) => {
-            const prob = stageProbabilities[stage] ?? 0;
-            const isEditing = editing === stage;
+          {STAGE_ORDER.map(stage => {
+            const prob = stageProbabilities[stage] ?? DEFAULT_STAGE_PROBS[stage] ?? 0;
             const isFixed = stage === "closed_won" || stage === "closed_lost";
             return (
-              <div key={stage} className="flex items-center gap-3 rounded-lg border border-border px-3 py-2.5">
-                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: STAGE_COLORS[stage] }} />
-                <span className="text-sm font-medium text-foreground w-28 shrink-0">{STAGE_LABELS[stage]}</span>
-                <div className="flex-1">
-                  <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-300" style={{ width: `${prob * 100}%`, backgroundColor: STAGE_COLORS[stage] }} />
-                  </div>
+              <div key={stage} className="flex items-center justify-between py-1.5 border-b border-border/50 last:border-0">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: STAGE_COLORS[stage] }} />
+                  <span className="text-xs font-medium">{STAGE_LABELS[stage]}</span>
                 </div>
-                {isEditing ? (
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <Input className="h-7 w-20 text-xs text-right" value={editValue}
-                      onChange={(e) => setEditValue(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") commitEdit(stage); if (e.key === "Escape") setEditing(null); }}
-                      autoFocus />
+                {editing === stage ? (
+                  <div className="flex items-center gap-1">
+                    <Input
+                      type="number" min={0} max={100} step={0.1}
+                      value={editValue}
+                      onChange={e => setEditValue(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") commitEdit(stage); if (e.key === "Escape") setEditing(null); }}
+                      className="w-20 h-6 text-xs text-right"
+                      autoFocus
+                    />
                     <span className="text-xs text-muted-foreground">%</span>
-                    <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-600" onClick={() => commitEdit(stage)} disabled={updateMutation.isPending}><Check className="w-3.5 h-3.5" /></Button>
-                    <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" onClick={() => setEditing(null)}><X className="w-3.5 h-3.5" /></Button>
+                    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => commitEdit(stage)}><Check className="w-3 h-3 text-emerald-600" /></Button>
+                    <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => setEditing(null)}><X className="w-3 h-3 text-red-500" /></Button>
                   </div>
                 ) : (
-                  <button className={`text-sm font-semibold w-14 text-right shrink-0 transition-colors ${ isFixed ? "text-muted-foreground cursor-default" : "text-foreground hover:text-indigo-600 cursor-pointer" }`}
-                    onClick={() => !isFixed && startEdit(stage, prob)} title={isFixed ? "Fixed value" : "Click to edit"}>
-                    {pct(prob)}
+                  <button
+                    onClick={() => !isFixed && startEdit(stage, prob)}
+                    title={isFixed ? "Fixed value" : "Click to edit"}
+                    className={`text-xs font-mono font-semibold px-2 py-0.5 rounded transition-colors ${
+                      isFixed ? "text-muted-foreground cursor-default" : "text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 cursor-pointer"
+                    }`}
+                  >
+                    {(prob * 100).toFixed(1)}%
                   </button>
                 )}
               </div>
@@ -288,52 +294,13 @@ function StageProbabilityEditor({ stageProbabilities }: { stageProbabilities: Re
   );
 }
 
-// ─── Metric Card ─────────────────────────────────────────────────────────────
-function MetricCard({
-  title,
-  value,
-  sub,
-  icon: Icon,
-  accent = false,
-  tooltip,
-}: {
-  title: string;
-  value: string;
-  sub?: string;
-  icon: React.ElementType;
-  accent?: boolean;
-  tooltip?: string;
-}) {
-  return (
-    <Card className={`relative overflow-hidden ${accent ? "border-indigo-300 bg-indigo-50/40 dark:bg-indigo-950/20 dark:border-indigo-700" : ""}`}>
-      <CardContent className="p-5">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1">{title}</p>
-            <p className="text-2xl font-bold text-foreground leading-none">{value}</p>
-            {sub && <p className="text-xs text-muted-foreground mt-1.5 leading-snug">{sub}</p>}
-          </div>
-          <div className={`p-2.5 rounded-xl shrink-0 ${accent ? "bg-indigo-100 dark:bg-indigo-900/40" : "bg-muted"}`}>
-            <Icon className={`w-5 h-5 ${accent ? "text-indigo-600 dark:text-indigo-400" : "text-muted-foreground"}`} />
-          </div>
-        </div>
-        {tooltip && (
-          <p className="mt-3 text-[11px] text-muted-foreground/70 border-t pt-2 leading-relaxed">{tooltip}</p>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
 // ─── Section Header ───────────────────────────────────────────────────────────
 function SectionHeader({ title, source, description }: { title: string; source: string; description: string }) {
   return (
     <div className="mb-4">
       <div className="flex items-center gap-2 mb-1">
         <h2 className="text-base font-semibold text-foreground">{title}</h2>
-        <Badge variant="outline" className="text-[10px] font-normal text-muted-foreground border-muted-foreground/30">
-          {source}
-        </Badge>
+        <Badge variant="outline" className="text-[10px] font-normal text-muted-foreground border-muted-foreground/30">{source}</Badge>
       </div>
       <p className="text-xs text-muted-foreground leading-relaxed max-w-2xl">{description}</p>
     </div>
@@ -341,19 +308,50 @@ function SectionHeader({ title, source, description }: { title: string; source: 
 }
 
 // ─── Custom Tooltip ───────────────────────────────────────────────────────────
-function ChartTooltip({ active, payload, label, prefix = "$" }: any) {
+function ChartTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   return (
     <div className="bg-popover border border-border rounded-lg shadow-lg px-3 py-2 text-xs">
       <p className="font-medium text-foreground mb-1">{label}</p>
       {payload.map((p: any, i: number) => (
         <p key={i} style={{ color: p.color }}>
-          {p.name}: {typeof p.value === "number" && p.name !== "Population %" && p.name !== "Probability"
-            ? prefix + p.value.toLocaleString()
-            : p.value}
+          {p.name}: {typeof p.value === "number" ? (p.value > 1000 ? fmt(p.value) : p.value.toFixed(2)) : p.value}
         </p>
       ))}
     </div>
+  );
+}
+
+// ─── Metric Card ─────────────────────────────────────────────────────────────
+function MetricCard({
+  title, value, sub, icon: Icon, accent, tooltip,
+  baseline, currentNum, baselineNum, isPercent,
+}: {
+  title: string; value: string; sub: string; icon: any; accent?: boolean; tooltip?: string;
+  baseline?: string; currentNum?: number; baselineNum?: number; isPercent?: boolean;
+}) {
+  return (
+    <Card className={`relative overflow-hidden ${accent ? "border-indigo-200 dark:border-indigo-800" : ""}`} title={tooltip}>
+      {accent && <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-indigo-500 to-violet-500" />}
+      <CardContent className="pt-4 pb-3 px-4">
+        <div className="flex items-start justify-between gap-2 mb-2">
+          <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide leading-tight">{title}</p>
+          <div className={`p-1.5 rounded-lg ${accent ? "bg-indigo-100 dark:bg-indigo-900/40" : "bg-muted"}`}>
+            <Icon className={`w-3.5 h-3.5 ${accent ? "text-indigo-600 dark:text-indigo-400" : "text-muted-foreground"}`} />
+          </div>
+        </div>
+        <div className="flex items-baseline gap-1 flex-wrap">
+          <p className="text-xl font-bold text-foreground tabular-nums">{value}</p>
+          {currentNum !== undefined && baselineNum !== undefined && (
+            <DeltaBadge current={currentNum} baseline={baselineNum} isPercent={isPercent} />
+          )}
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-1 leading-tight">{sub}</p>
+        {baseline && baseline !== value && (
+          <p className="text-[10px] text-muted-foreground/60 mt-0.5">Baseline: {baseline}</p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -362,19 +360,112 @@ export default function Econophysics() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [methodologyOpen, setMethodologyOpen] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(true);
 
-  const { data, isLoading } = trpc.econophysics.full.useQuery(undefined, {
-    staleTime: 60_000,
-  });
+  const { data, isLoading } = trpc.econophysics.full.useQuery(undefined, { staleTime: 60_000 });
   const { data: stageProbData } = trpc.stageProbabilities.get.useQuery(undefined, { staleTime: 30_000 });
+
+  // ── Derive baseline params from server data ──────────────────────────────
+  const baselineParams = useMemo<WhatIfParams>(() => {
+    const serverProbs = stageProbData ?? DEFAULT_STAGE_PROBS;
+    const gbm = data?.gbmParams;
+    const dealValues = data?.boltzmannGibbs?.histogram?.flatMap((b: any) => Array(b.count).fill(b.binMid)) ?? [];
+    const avgDeal = dealValues.length > 0 ? dealValues.reduce((s: number, v: number) => s + v, 0) / dealValues.length : 100_000;
+    const dealCount = dealValues.length || 10;
+    return {
+      muAnnual: gbm?.mu ?? 0.3,
+      sigmaAnnual: gbm?.sigma ?? 0.2,
+      horizonMonths: 6,
+      nPaths: 200,
+      paretoPercentile: 0.9,
+      stageProbabilities: { ...DEFAULT_STAGE_PROBS, ...serverProbs },
+      avgDealValue: Math.round(avgDeal),
+      dealCount,
+    };
+  }, [data, stageProbData]);
+
+  const [whatIfParams, setWhatIfParams] = useState<WhatIfParams | null>(null);
+  const activeParams = whatIfParams ?? baselineParams;
+  const isWhatIfMode = whatIfParams !== null;
+
+  const handleParamsChange = useCallback((p: WhatIfParams) => {
+    setWhatIfParams(p);
+  }, []);
+
+  const handleReset = useCallback(() => {
+    setWhatIfParams(null);
+  }, []);
+
+  // ── All useMemo hooks ABOVE early returns (Rules of Hooks) ──────────────
+  const serverBGData = (data as any)?.boltzmannGibbs;
+  const serverRepRevenues: any[] = (data as any)?.repRevenues ?? [];
+  const serverMonthlySeries: any[] = (data as any)?.monthlySeries ?? [];
+  const serverAllDeals: any[] = (data as any)?.allDeals ?? [];
+
+  const syntheticDealValues = useMemo(() => {
+    if (!isWhatIfMode) return null;
+    const T = activeParams.avgDealValue;
+    const n = activeParams.dealCount;
+    const values: number[] = [];
+    let seed = 12345;
+    for (let i = 0; i < n; i++) {
+      seed = (seed * 1664525 + 1013904223) & 0xffffffff;
+      const u = Math.max((seed >>> 0) / 0xffffffff, 1e-10);
+      values.push(Math.round(-T * Math.log(u)));
+    }
+    return values;
+  }, [isWhatIfMode, activeParams.avgDealValue, activeParams.dealCount]);
+
+  const realDealValues = useMemo(() =>
+    serverBGData?.histogram?.flatMap((b: any) => Array(Math.max(0, b.count ?? 0)).fill(b.bin ?? 0)).filter((v: number) => v > 0) ?? [],
+    [serverBGData]
+  );
+  const wiDealValues = syntheticDealValues ?? realDealValues;
+
+  const wiBG = useMemo(() =>
+    wiDealValues.length > 0 ? computeBoltzmann(wiDealValues, activeParams.paretoPercentile) : null,
+    [wiDealValues, activeParams.paretoPercentile]
+  );
+  const wiGini = useMemo(() =>
+    serverRepRevenues.length > 0 ? computeGini(serverRepRevenues.map((r: any) => r.revenue)) : null,
+    [serverRepRevenues]
+  );
+  const wiEntropy = useMemo(() =>
+    serverRepRevenues.length > 0 ? computeEntropy(serverRepRevenues.map((r: any) => r.revenue)) : null,
+    [serverRepRevenues]
+  );
+
+  const s0Hook = serverMonthlySeries.length > 0 ? serverMonthlySeries[serverMonthlySeries.length - 1].totalValue : 100_000;
+
+  const wiForecast = useMemo(() =>
+    computeMonteCarlo(s0Hook, activeParams.muAnnual, activeParams.sigmaAnnual, activeParams.horizonMonths, activeParams.nPaths),
+    [s0Hook, activeParams.muAnnual, activeParams.sigmaAnnual, activeParams.horizonMonths, activeParams.nPaths]
+  );
+  const wiPipeline = useMemo(() =>
+    computeBinomial(serverAllDeals, activeParams.stageProbabilities),
+    [serverAllDeals, activeParams.stageProbabilities]
+  );
+  const baseBG = useMemo(() =>
+    realDealValues.length > 0 ? computeBoltzmann(realDealValues, 0.9) : null,
+    [realDealValues]
+  );
+  const baseForecast = useMemo(() =>
+    computeMonteCarlo(s0Hook, baselineParams.muAnnual, baselineParams.sigmaAnnual, 6, 200),
+    [s0Hook, baselineParams.muAnnual, baselineParams.sigmaAnnual]
+  );
+  const basePipeline = useMemo(() =>
+    computeBinomial(serverAllDeals, baselineParams.stageProbabilities),
+    [serverAllDeals, baselineParams.stageProbabilities]
+  );
+
+
+  // ── Sync baseline into whatIfParams once data loads ──────────────────────
+  // (don't auto-set — let user explicitly open what-if)
 
   if (isLoading) {
     return (
       <div className="p-6 space-y-6">
-        <div>
-          <Skeleton className="h-7 w-64 mb-2" />
-          <Skeleton className="h-4 w-96" />
-        </div>
+        <div><Skeleton className="h-7 w-64 mb-2" /><Skeleton className="h-4 w-96" /></div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />)}
         </div>
@@ -383,38 +474,43 @@ export default function Econophysics() {
       </div>
     );
   }
-
   if (!data) return null;
 
-  const { boltzmannGibbs, gini, entropy, gbmParams, forecast, pipelineValue, temperatureTrend, repRevenues, monthlySeries } = data;
+  const { boltzmannGibbs: serverBG, gini: serverGini, entropy: serverEntropy, gbmParams, forecast: serverForecast, pipelineValue: serverPipeline, temperatureTrend, repRevenues, monthlySeries, allDeals } = data as any;
 
-  // ── Data quality checks ──
-  const dealCount = boltzmannGibbs.histogram.reduce((s: number, b: any) => s + b.count, 0);
+  // ── Data quality checks ──────────────────────────────────────────────────
+  const dealCount = serverBG.histogram.reduce((s: number, b: any) => s + b.count, 0);
   const monthCount = monthlySeries.filter((m: any) => m.totalValue > 0).length;
 
-  // ── Lorenz curve data ──
-  const lorenzData = gini.lorenz.filter((_, i) => i % Math.max(1, Math.floor(gini.lorenz.length / 20)) === 0).map(p => ({
-    population: Math.round(p.population * 100),
-    wealthShare: Math.round(p.wealthShare * 100),
-    equalLine: Math.round(p.population * 100),
-  }));
+  // Use what-if values for display
+  const displayBG = (isWhatIfMode && wiBG) ? wiBG : serverBG;
+  const displayGini = wiGini ?? serverGini;
+  const displayEntropy = wiEntropy ?? serverEntropy;
+  const displayForecast = isWhatIfMode ? wiForecast : serverForecast;
+  const displayPipeline = isWhatIfMode ? wiPipeline : serverPipeline;
 
-  // ── Monte Carlo fan chart data ──
-  const months = ["Now", "+1m", "+2m", "+3m", "+4m", "+5m", "+6m"];
-  const forecastData = forecast.median.map((med, i) => ({
-    month: months[i] ?? `+${i}m`,
+  // ── Chart data ────────────────────────────────────────────────────────────
+  const lorenzData = (displayGini?.lorenz ?? []).filter((_: unknown, i: number) => i % Math.max(1, Math.floor((displayGini?.lorenz?.length ?? 1) / 20)) === 0)
+    .map((p: { population: number; wealthShare: number }) => ({
+      population: Math.round(p.population * 100),
+      wealthShare: Math.round(p.wealthShare * 100),
+      equalLine: Math.round(p.population * 100),
+    }));
+
+  const forecastLabels = Array.from({ length: activeParams.horizonMonths + 1 }, (_, i) => i === 0 ? "Now" : `+${i}mo`);
+  const forecastData = displayForecast.median.map((med: number, i: number) => ({
+    month: forecastLabels[i] ?? `+${i}mo`,
     median: med,
-    p10: forecast.p10[i],
-    p90: forecast.p90[i],
-    p25: forecast.p25[i],
-    p75: forecast.p75[i],
+    p10: displayForecast.p10[i],
+    p90: displayForecast.p90[i],
+    p25: displayForecast.p25[i],
+    p75: displayForecast.p75[i],
   }));
 
-  // ── Pipeline binomial data ──
-  const pipelineData = pipelineValue.byStage
-    .filter(s => s.stage !== "closed_lost")
-    .sort((a, b) => b.faceValue - a.faceValue)
-    .map(s => ({
+  const pipelineData = displayPipeline.byStage
+    .filter((s: any) => s.stage !== "closed_lost")
+    .sort((a: any, b: any) => b.faceValue - a.faceValue)
+    .map((s: any) => ({
       stage: STAGE_LABELS[s.stage] ?? s.stage,
       faceValue: s.faceValue,
       expectedValue: s.expectedValue,
@@ -422,473 +518,369 @@ export default function Econophysics() {
       fill: STAGE_COLORS[s.stage] ?? "#94a3b8",
     }));
 
-  // ── Economic temperature trend ──
-  const tempData = temperatureTrend.slice(-12).map(t => ({
-    label: t.label,
-    temperature: t.temperature,
-  }));
-
-  // ── Monthly revenue for GBM context ──
-  const revenueData = monthlySeries.slice(-12).map(m => ({
-    label: m.label,
-    revenue: m.totalValue,
-  }));
+  const tempData = temperatureTrend.slice(-12).map((t: any) => ({ label: t.label, temperature: t.temperature }));
+  const revenueData = monthlySeries.slice(-12).map((m: any) => ({ label: m.label, revenue: m.totalValue }));
 
   return (
-    <div className="p-6 space-y-8 max-w-7xl">
-      {/* ── Page Header ── */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-foreground mb-1">Econophysics Analytics</h1>
-          <p className="text-sm text-muted-foreground max-w-3xl">
-            Statistical physics and mathematical finance models applied to CRM data. Based on{" "}
-            <a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer"
-              className="font-medium text-foreground hover:text-indigo-600 inline-flex items-center gap-0.5 transition-colors">
-              Classical Econophysics<ExternalLink className="w-3 h-3 ml-0.5" />
-            </a>{" "}(Cockshott, Cottrell, Yakovenko et al.) and{" "}
-            <a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer"
-              className="font-medium text-foreground hover:text-indigo-600 inline-flex items-center gap-0.5 transition-colors">
-              Mathematical Finance<ExternalLink className="w-3 h-3 ml-0.5" />
-            </a>{" "}(Wallace, Durham University).
-          </p>
-        </div>
-        <Button variant="outline" size="sm" className="shrink-0 gap-1.5" onClick={() => setMethodologyOpen(true)}>
-          <BookOpen className="w-3.5 h-3.5" />
-          Read methodology
-        </Button>
-      </div>
-
-      {/* ── Data Quality Banner ── */}
-      <DataQualityBanner dealCount={dealCount} monthCount={monthCount} />
-
-      {/* ── Top KPI Cards ── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <MetricCard
-          title="Economic Temperature"
-          value={fmt(boltzmannGibbs.temperature)}
-          sub="T = M/N — mean deal value per agent"
-          icon={Thermometer}
-          accent
-          tooltip="Analogous to thermodynamic temperature. Higher T = more 'hot money' per deal. Source: Ch. 8, Classical Econophysics."
-        />
-        <MetricCard
-          title="Gini Coefficient"
-          value={boltzmannGibbs.temperature > 0 ? gini.gini.toFixed(3) : "—"}
-          sub={gini.interpretation}
-          icon={Activity}
-          tooltip="Measures revenue inequality across reps. Pure Boltzmann-Gibbs equilibrium gives Gini = 0.5. Source: Classical Econophysics Ch. 8, 13."
-        />
-        <MetricCard
-          title="Revenue Entropy"
-          value={`${pct(entropy.normalizedEntropy)} S/S_max`}
-          sub={entropy.interpretation}
-          icon={Sigma}
-          tooltip="S = −Σ p_i·ln(p_i). Maximum entropy = perfectly equal distribution. Source: Boltzmann entropy, Classical Econophysics Ch. 1."
-        />
-        <MetricCard
-          title="Pareto Tail Share"
-          value={pct(boltzmannGibbs.paretoRevenueShare)}
-          sub={`Top ${pct(boltzmannGibbs.paretoFraction)} of deals by value`}
-          icon={BarChart2}
-          tooltip="Deals above the 90th percentile follow a power-law (Pareto-Zipf) rather than the Boltzmann-Gibbs exponential. Source: Dragulescu & Yakovenko (2002)."
-        />
-        <MetricCard
-          title="GBM Drift (μ)"
-          value={`${(gbmParams.mu * 100).toFixed(1)}% /yr`}
-          sub="Expected annual revenue growth rate"
-          icon={TrendingUp}
-          tooltip="μ = annualised mean log-return of monthly revenue. From GBM: S_t = S_0·exp((μ−σ²/2)t + σW_t). Source: Mathematical Finance Ch. 6."
-        />
-        <MetricCard
-          title="GBM Volatility (σ)"
-          value={`${(gbmParams.sigma * 100).toFixed(1)}% /yr`}
-          sub="Annualised revenue volatility"
-          icon={Zap}
-          tooltip="σ = std(log-returns)·√12. Measures unpredictability of revenue growth. Source: Mathematical Finance Ch. 6 (Black-Scholes / GBM)."
-        />
-        <MetricCard
-          title="Pipeline Expected Value"
-          value={fmt(pipelineValue.totalExpected)}
-          sub={`${pct(pipelineValue.weightedConversionRate)} weighted conversion`}
-          icon={Target}
-          accent
-          tooltip="E[Revenue] = Σ deal_value × P(win|stage). Binomial model with stage-specific win probabilities. Source: Mathematical Finance Ch. 2–3."
-        />
-        <MetricCard
-          title="GBM 6-Month Forecast"
-          value={fmt(forecast.expectedFinal)}
-          sub="E[S_T] = S_0·exp(μ·T), median of 200 paths"
-          icon={TrendingUp}
-          tooltip="Monte Carlo simulation: 200 GBM paths over 6 months using estimated μ and σ. Source: Mathematical Finance Ch. 6."
-        />
-      </div>
-
-      {/* ── Section 1: Boltzmann-Gibbs Distribution ── */}
-      <div>
-        <SectionHeader
-          title="Boltzmann-Gibbs Distribution of Deal Values"
-          source="Classical Econophysics Ch. 8 — Dragulescu & Yakovenko (2000)"
-          description={`In a closed economic system where money is conserved, the equilibrium distribution follows P(m) = (1/T)·exp(−m/T) where T = ${fmt(boltzmannGibbs.temperature)} is the economic temperature. The bars show observed deal values; the line shows the theoretical Boltzmann-Gibbs fit. Deals above the Pareto threshold (${fmt(boltzmannGibbs.paretoThreshold)}) deviate from the exponential and enter the power-law tail.`}
-        />
-        <Card>
-          <CardContent className="pt-5 pb-3">
-            <ResponsiveContainer width="100%" height={280}>
-              <ComposedChart data={boltzmannGibbs.histogram} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis
-                  dataKey="bin"
-                  tickFormatter={v => fmt(v)}
-                  tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
-                />
-                <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
-                <Tooltip content={<ChartTooltip />} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="count" name="Observed count" fill="#6366f1" opacity={0.75} radius={[3, 3, 0, 0]} />
-                <Line
-                  dataKey="expected"
-                  name="Boltzmann-Gibbs fit"
-                  stroke="#f59e0b"
-                  strokeWidth={2.5}
-                  dot={false}
-                  type="monotone"
-                />
-                <ReferenceLine
-                  x={boltzmannGibbs.paretoThreshold}
-                  stroke="#f87171"
-                  strokeDasharray="4 3"
-                  label={{ value: "Pareto threshold", position: "top", fontSize: 10, fill: "#f87171" }}
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── Section 2: Lorenz Curve & Gini ── */}
-      <div>
-        <SectionHeader
-          title="Lorenz Curve — Revenue Concentration Across Sales Reps"
-          source="Classical Econophysics Ch. 8, 13 — Gini coefficient"
-          description={`The Lorenz curve plots cumulative revenue share against cumulative population share. The diagonal represents perfect equality. Gini = ${gini.gini.toFixed(3)}. ${gini.interpretation}. For a pure Boltzmann-Gibbs (exponential) distribution, Gini = 0.5. Values above 0.5 indicate Pareto dynamics in the upper tail.`}
-        />
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium">Lorenz Curve</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0 pb-3">
-              <ResponsiveContainer width="100%" height={260}>
-                <ComposedChart data={lorenzData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis
-                    dataKey="population"
-                    tickFormatter={v => `${v}%`}
-                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
-                    label={{ value: "Population %", position: "insideBottom", offset: -3, fontSize: 11 }}
-                  />
-                  <YAxis
-                    tickFormatter={v => `${v}%`}
-                    tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }}
-                    label={{ value: "Revenue %", angle: -90, position: "insideLeft", fontSize: 11 }}
-                  />
-                  <Tooltip
-                    formatter={(v: any, name: string) => [`${v}%`, name]}
-                    labelFormatter={l => `Population: ${l}%`}
-                  />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Line
-                    dataKey="equalLine"
-                    name="Perfect equality"
-                    stroke="#94a3b8"
-                    strokeDasharray="5 3"
-                    strokeWidth={1.5}
-                    dot={false}
-                  />
-                  <Area
-                    dataKey="wealthShare"
-                    name="Actual revenue share"
-                    stroke="#6366f1"
-                    fill="#6366f1"
-                    fillOpacity={0.15}
-                    strokeWidth={2}
-                    dot={false}
-                    type="monotone"
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium">Revenue per Rep</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0 pb-3">
-              <ResponsiveContainer width="100%" height={260}>
-                <BarChart
-                  data={[...repRevenues].sort((a, b) => b.revenue - a.revenue)}
-                  margin={{ top: 5, right: 20, left: 10, bottom: 30 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis
-                    dataKey="repName"
-                    tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                    angle={-30}
-                    textAnchor="end"
-                    interval={0}
-                  />
-                  <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="revenue" name="Revenue" fill="#6366f1" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-
-      {/* ── Section 3: GBM Monte Carlo Forecast ── */}
-      <div>
-        <SectionHeader
-          title="GBM Monte Carlo Revenue Forecast (6 Months)"
-          source="Mathematical Finance Ch. 6 — Black-Scholes / Geometric Brownian Motion"
-          description={`Revenue modelled as S_t = S_0·exp((μ−σ²/2)·t + σ·W_t) with estimated drift μ = ${(gbmParams.mu * 100).toFixed(1)}%/yr and volatility σ = ${(gbmParams.sigma * 100).toFixed(1)}%/yr from historical log-returns. 200 Monte Carlo paths simulated. The shaded bands show the 10th–90th and 25th–75th percentile ranges. Expected final value: ${fmt(forecast.expectedFinal)}.`}
-        />
-        <Card>
-          <CardContent className="pt-5 pb-3">
-            <ResponsiveContainer width="100%" height={300}>
-              <ComposedChart data={forecastData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
-                <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
-                <Tooltip content={<ChartTooltip />} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                {/* 10-90 band */}
-                <Area
-                  dataKey="p90"
-                  name="90th pct"
-                  stroke="transparent"
-                  fill="#6366f1"
-                  fillOpacity={0.08}
-                  legendType="none"
-                  type="monotone"
-                />
-                <Area
-                  dataKey="p10"
-                  name="10th pct"
-                  stroke="transparent"
-                  fill="#ffffff"
-                  fillOpacity={1}
-                  legendType="none"
-                  type="monotone"
-                />
-                {/* 25-75 band */}
-                <Area
-                  dataKey="p75"
-                  name="75th pct"
-                  stroke="transparent"
-                  fill="#6366f1"
-                  fillOpacity={0.15}
-                  legendType="none"
-                  type="monotone"
-                />
-                <Area
-                  dataKey="p25"
-                  name="25th pct"
-                  stroke="transparent"
-                  fill="#ffffff"
-                  fillOpacity={1}
-                  legendType="none"
-                  type="monotone"
-                />
-                <Line
-                  dataKey="p90"
-                  name="Optimistic (P90)"
-                  stroke="#34d399"
-                  strokeWidth={1.5}
-                  strokeDasharray="4 3"
-                  dot={false}
-                  type="monotone"
-                />
-                <Line
-                  dataKey="p10"
-                  name="Pessimistic (P10)"
-                  stroke="#f87171"
-                  strokeWidth={1.5}
-                  strokeDasharray="4 3"
-                  dot={false}
-                  type="monotone"
-                />
-                <Line
-                  dataKey="median"
-                  name="Median forecast"
-                  stroke="#6366f1"
-                  strokeWidth={2.5}
-                  dot={{ r: 4, fill: "#6366f1" }}
-                  type="monotone"
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── Section 4: Binomial Pipeline Expected Value ── */}
-      <div>
-        <SectionHeader
-          title="Binomial Pipeline Expected Value"
-          source="Mathematical Finance Ch. 2–3 — Binomial model & risk-neutral valuation"
-          description={`Each deal is modelled as a binomial outcome: win with probability p(stage) or lose. Stage win probabilities: Lead 10%, Qualified 25%, Proposal 45%, Negotiation 70%, Closed Won 100%. Total face value: ${fmt(pipelineValue.totalFaceValue)}. Weighted expected value: ${fmt(pipelineValue.totalExpected)} (${pct(pipelineValue.weightedConversionRate)} conversion).`}
-        />
-        <Card>
-          <CardContent className="pt-5 pb-3">
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={pipelineData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                <XAxis dataKey="stage" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
-                <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
-                <Tooltip content={<ChartTooltip />} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar dataKey="faceValue" name="Face value" fill="#94a3b8" radius={[4, 4, 0, 0]} opacity={0.5} />
-                <Bar dataKey="expectedValue" name="Expected value (binomial)" fill="#6366f1" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── Section 5: Economic Temperature Trend + Stage Probability Editor ── */}
-      <div>
-        <SectionHeader
-          title="Economic Temperature Trend"
-          source="Classical Econophysics Ch. 8 — T = M/N (mean money per agent)"
-          description={`Economic temperature T(t) = total deal value / number of deals per period. Analogous to the thermodynamic temperature of a gas: a rising T indicates increasing 'hot money' per deal — deals are getting larger on average. A falling T may signal market cooling or a shift toward smaller, higher-volume deals.`}
-        />
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium">Temperature T(t) Over Time</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0 pb-3">
-              <ResponsiveContainer width="100%" height={220}>
-                <AreaChart data={tempData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
-                  <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Area
-                    dataKey="temperature"
-                    name="Economic temperature T"
-                    stroke="#f59e0b"
-                    fill="#f59e0b"
-                    fillOpacity={0.15}
-                    strokeWidth={2}
-                    type="monotone"
-                    dot={{ r: 3, fill: "#f59e0b" }}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium">Monthly Revenue (Historical)</CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0 pb-3">
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={revenueData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
-                  <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="revenue" name="Revenue" fill="#6366f1" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-          {isAdmin && stageProbData ? (
-            <StageProbabilityEditor stageProbabilities={stageProbData} />
-          ) : (
-            <Card className="flex items-center justify-center min-h-[200px]">
-              <p className="text-xs text-muted-foreground text-center px-6">
-                Stage win probability calibration is available to administrators only.
+    <div className="flex h-full overflow-hidden">
+      {/* ── Main content area ── */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="p-6 space-y-8 max-w-6xl">
+          {/* ── Page Header ── */}
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h1 className="text-xl font-bold text-foreground mb-1">Econophysics Analytics</h1>
+              <p className="text-sm text-muted-foreground max-w-2xl">
+                Statistical physics and mathematical finance models applied to CRM data. Based on{" "}
+                <a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer"
+                  className="font-medium text-foreground hover:text-indigo-600 inline-flex items-center gap-0.5 transition-colors">
+                  Classical Econophysics<ExternalLink className="w-3 h-3 ml-0.5" />
+                </a>{" "}and{" "}
+                <a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer"
+                  className="font-medium text-foreground hover:text-indigo-600 inline-flex items-center gap-0.5 transition-colors">
+                  Mathematical Finance<ExternalLink className="w-3 h-3 ml-0.5" />
+                </a>.
               </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <Button variant="outline" size="sm" className="gap-1.5 text-xs" onClick={() => setMethodologyOpen(true)}>
+                <BookOpen className="w-3.5 h-3.5" />Read methodology
+              </Button>
+              <Button
+                size="sm"
+                className={`gap-1.5 text-xs ${isWhatIfMode ? "bg-indigo-600 hover:bg-indigo-700 text-white" : ""}`}
+                variant={isWhatIfMode ? "default" : "outline"}
+                onClick={() => { setPanelOpen(v => !v); if (!panelOpen && !whatIfParams) setWhatIfParams({ ...baselineParams }); }}
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                What-if
+                {panelOpen ? <ChevronRight className="w-3 h-3" /> : <ChevronLeft className="w-3 h-3" />}
+              </Button>
+            </div>
+          </div>
+
+          {/* ── Banners ── */}
+          <DataQualityBanner dealCount={dealCount} monthCount={monthCount} />
+          {isWhatIfMode && <WhatIfModeBanner onReset={handleReset} />}
+
+          {/* ── Top KPI Cards ── */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <MetricCard
+              title="Economic Temperature"
+              value={fmt(displayBG.temperature)}
+              baseline={isWhatIfMode ? fmt(baseBG?.temperature ?? 0) : undefined}
+              currentNum={displayBG.temperature}
+              baselineNum={baseBG?.temperature ?? 0}
+              sub="T = M/N — mean deal value per agent"
+              icon={Thermometer} accent
+              tooltip="Analogous to thermodynamic temperature. Higher T = more 'hot money' per deal."
+            />
+            <MetricCard
+              title="Gini Coefficient"
+              value={displayGini.gini.toFixed(3)}
+              sub={displayGini.interpretation}
+              icon={Activity}
+              tooltip="Measures revenue inequality across reps. Gini = 0.5 for pure Boltzmann-Gibbs equilibrium."
+            />
+            <MetricCard
+              title="Revenue Entropy"
+              value={`${pct(displayEntropy.normalizedEntropy)} S/S_max`}
+              sub={displayEntropy.interpretation}
+              icon={Sigma}
+              tooltip="S = −Σ p_i·ln(p_i). Maximum entropy = perfectly equal distribution."
+            />
+            <MetricCard
+              title="Pareto Tail Share"
+              value={pct(displayBG.paretoRevenueShare)}
+              baseline={isWhatIfMode ? pct(baseBG?.paretoRevenueShare ?? 0) : undefined}
+              currentNum={displayBG.paretoRevenueShare}
+              baselineNum={baseBG?.paretoRevenueShare ?? 0}
+              isPercent
+              sub={`Top ${pct(displayBG.paretoFraction)} of deals by value`}
+              icon={BarChart2}
+              tooltip="Deals above the Pareto threshold follow a power-law rather than the exponential body."
+            />
+            <MetricCard
+              title="GBM Drift (μ)"
+              value={`${(activeParams.muAnnual * 100).toFixed(1)}% /yr`}
+              baseline={isWhatIfMode ? `${(baselineParams.muAnnual * 100).toFixed(1)}% /yr` : undefined}
+              currentNum={activeParams.muAnnual}
+              baselineNum={baselineParams.muAnnual}
+              isPercent
+              sub="Expected annual revenue growth rate"
+              icon={TrendingUp}
+              tooltip="μ = annualised mean log-return. From GBM: S_t = S_0·exp((μ−σ²/2)t + σW_t)."
+            />
+            <MetricCard
+              title="GBM Volatility (σ)"
+              value={`${(activeParams.sigmaAnnual * 100).toFixed(1)}% /yr`}
+              baseline={isWhatIfMode ? `${(baselineParams.sigmaAnnual * 100).toFixed(1)}% /yr` : undefined}
+              currentNum={activeParams.sigmaAnnual}
+              baselineNum={baselineParams.sigmaAnnual}
+              isPercent
+              sub="Annualised revenue volatility"
+              icon={Zap}
+              tooltip="σ = std(log-returns)·√12. Measures unpredictability of revenue growth."
+            />
+            <MetricCard
+              title="Pipeline Expected Value"
+              value={fmt(displayPipeline.totalExpected)}
+              baseline={isWhatIfMode ? fmt(basePipeline.totalExpected) : undefined}
+              currentNum={displayPipeline.totalExpected}
+              baselineNum={basePipeline.totalExpected}
+              sub={`${pct(displayPipeline.weightedConversionRate)} weighted conversion`}
+              icon={Target} accent
+              tooltip="E[Revenue] = Σ deal_value × P(win|stage). Binomial model."
+            />
+            <MetricCard
+              title={`GBM ${activeParams.horizonMonths}-Month Forecast`}
+              value={fmt(displayForecast.expectedFinal)}
+              baseline={isWhatIfMode ? fmt(baseForecast.expectedFinal) : undefined}
+              currentNum={displayForecast.expectedFinal}
+              baselineNum={baseForecast.expectedFinal}
+              sub={`E[S_T] = S_0·exp(μ·T), median of ${activeParams.nPaths} paths`}
+              icon={TrendingUp}
+              tooltip="Monte Carlo simulation using estimated μ and σ."
+            />
+          </div>
+
+          {/* ── Section 1: Boltzmann-Gibbs Distribution ── */}
+          <div>
+            <SectionHeader
+              title="Boltzmann-Gibbs Distribution of Deal Values"
+              source="Classical Econophysics Ch. 8 — Dragulescu & Yakovenko (2000)"
+              description={`P(m) = (1/T)·exp(−m/T) where T = ${fmt(displayBG.temperature)}. Bars = observed deal values; line = theoretical fit. Pareto threshold at ${Math.round(activeParams.paretoPercentile * 100)}th percentile (${fmt(displayBG.paretoThreshold)}).`}
+            />
+            <Card>
+              <CardContent className="pt-5 pb-3">
+                <ResponsiveContainer width="100%" height={280}>
+                  <ComposedChart data={displayBG.histogram} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="bin" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                    <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                    <Tooltip content={<ChartTooltip />} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Bar dataKey="count" name="Observed count" fill="#6366f1" opacity={0.75} radius={[3, 3, 0, 0]} />
+                    <Line dataKey="expected" name="Boltzmann-Gibbs fit" stroke="#f59e0b" strokeWidth={2.5} dot={false} type="monotone" />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </CardContent>
             </Card>
-          )}
+          </div>
+
+          {/* ── Section 2: Lorenz Curve ── */}
+          <div>
+            <SectionHeader
+              title="Lorenz Curve — Revenue Concentration Across Sales Reps"
+              source="Classical Econophysics Ch. 8, 13 — Gini coefficient"
+              description={`Gini = ${displayGini.gini.toFixed(3)}. ${displayGini.interpretation}. For a pure Boltzmann-Gibbs distribution, Gini = 0.5.`}
+            />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Lorenz Curve</CardTitle></CardHeader>
+                <CardContent className="pt-0 pb-3">
+                  <ResponsiveContainer width="100%" height={260}>
+                    <ComposedChart data={lorenzData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="population" tickFormatter={v => `${v}%`} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} label={{ value: "Population %", position: "insideBottom", offset: -3, fontSize: 11 }} />
+                      <YAxis tickFormatter={v => `${v}%`} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} label={{ value: "Revenue %", angle: -90, position: "insideLeft", fontSize: 11 }} />
+                      <Tooltip formatter={(v: any, name: string) => [`${v}%`, name]} labelFormatter={l => `Population: ${l}%`} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Line dataKey="equalLine" name="Perfect equality" stroke="#94a3b8" strokeDasharray="5 3" strokeWidth={1.5} dot={false} />
+                      <Area dataKey="wealthShare" name="Actual revenue share" stroke="#6366f1" fill="#6366f1" fillOpacity={0.15} strokeWidth={2} dot={false} type="monotone" />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Revenue per Rep</CardTitle></CardHeader>
+                <CardContent className="pt-0 pb-3">
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={[...repRevenues].sort((a: any, b: any) => b.revenue - a.revenue)} margin={{ top: 5, right: 20, left: 10, bottom: 30 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="repName" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} angle={-30} textAnchor="end" interval={0} />
+                      <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                      <Tooltip content={<ChartTooltip />} />
+                      <Bar dataKey="revenue" name="Revenue" fill="#6366f1" radius={[3, 3, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+
+          {/* ── Section 3: GBM Monte Carlo ── */}
+          <div>
+            <SectionHeader
+              title={`GBM Monte Carlo Revenue Forecast (${activeParams.horizonMonths} Months)`}
+              source="Mathematical Finance Ch. 6 — Black-Scholes / Geometric Brownian Motion"
+              description={`S_t = S_0·exp((μ−σ²/2)·t + σ·W_t) with μ = ${(activeParams.muAnnual * 100).toFixed(1)}%/yr and σ = ${(activeParams.sigmaAnnual * 100).toFixed(1)}%/yr. ${activeParams.nPaths} Monte Carlo paths. Expected final: ${fmt(displayForecast.expectedFinal)}.`}
+            />
+            <Card>
+              <CardContent className="pt-5 pb-3">
+                <ResponsiveContainer width="100%" height={300}>
+                  <ComposedChart data={forecastData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="month" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                    <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                    <Tooltip content={<ChartTooltip />} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Area dataKey="p90" name="90th pct" stroke="transparent" fill="#6366f1" fillOpacity={0.08} />
+                    <Area dataKey="p75" name="75th pct" stroke="transparent" fill="#6366f1" fillOpacity={0.12} />
+                    <Area dataKey="p25" name="25th pct" stroke="transparent" fill="#6366f1" fillOpacity={0.12} />
+                    <Area dataKey="p10" name="10th pct" stroke="transparent" fill="#6366f1" fillOpacity={0.08} />
+                    <Line dataKey="median" name="Median path" stroke="#6366f1" strokeWidth={2.5} dot={{ r: 3, fill: "#6366f1" }} type="monotone" />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* ── Section 4: Binomial Pipeline EV ── */}
+          <div>
+            <SectionHeader
+              title="Binomial Pipeline Expected Value"
+              source="Mathematical Finance Ch. 2–3 — Binomial model & risk-neutral valuation"
+              description={`E[R] = Σ vᵢ·p(stageᵢ). Total face value: ${fmt(displayPipeline.totalFaceValue)}. Weighted expected value: ${fmt(displayPipeline.totalExpected)} (${pct(displayPipeline.weightedConversionRate)} conversion).`}
+            />
+            <Card>
+              <CardContent className="pt-5 pb-3">
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={pipelineData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                    <XAxis dataKey="stage" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                    <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                    <Tooltip content={<ChartTooltip />} />
+                    <Legend wrapperStyle={{ fontSize: 12 }} />
+                    <Bar dataKey="faceValue" name="Face value" fill="#94a3b8" radius={[4, 4, 0, 0]} opacity={0.5} />
+                    <Bar dataKey="expectedValue" name="Expected value (binomial)" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* ── Section 5: Economic Temperature Trend + Stage Probability Editor ── */}
+          <div>
+            <SectionHeader
+              title="Economic Temperature Trend"
+              source="Classical Econophysics Ch. 8 — T = M/N (mean money per agent)"
+              description="T(t) = total deal value / number of deals per period. Rising T = larger deals on average. Falling T may signal market cooling or a shift to higher-volume smaller deals."
+            />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Temperature T(t) Over Time</CardTitle></CardHeader>
+                <CardContent className="pt-0 pb-3">
+                  <ResponsiveContainer width="100%" height={220}>
+                    <AreaChart data={tempData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="label" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                      <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                      <Tooltip content={<ChartTooltip />} />
+                      <Area dataKey="temperature" name="Economic temperature T" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.15} strokeWidth={2} type="monotone" dot={{ r: 3, fill: "#f59e0b" }} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Monthly Revenue (Historical)</CardTitle></CardHeader>
+                <CardContent className="pt-0 pb-3">
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart data={revenueData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="label" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                      <YAxis tickFormatter={v => fmt(v)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                      <Tooltip content={<ChartTooltip />} />
+                      <Bar dataKey="revenue" name="Revenue" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+              {isAdmin && stageProbData ? (
+                <StageProbabilityEditor stageProbabilities={stageProbData} />
+              ) : (
+                <Card className="flex items-center justify-center min-h-[200px]">
+                  <p className="text-xs text-muted-foreground text-center px-6">
+                    Stage win probability calibration is available to administrators only.
+                  </p>
+                </Card>
+              )}
+            </div>
+          </div>
+
+          {/* ── Model Reference Table ── */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium">Model Reference</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left py-2 pr-4 font-medium text-muted-foreground">Model</th>
+                      <th className="text-left py-2 pr-4 font-medium text-muted-foreground">Formula</th>
+                      <th className="text-left py-2 pr-4 font-medium text-muted-foreground">Current Value</th>
+                      <th className="text-left py-2 font-medium text-muted-foreground">Source</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/50">
+                    {[
+                      { name: "Boltzmann-Gibbs", formula: "P(m) = (1/T)·e^(−m/T)", value: `T = ${fmt(displayBG.temperature)}, λ = ${displayBG.lambda.toFixed(6)}`, src: "Classical Econophysics Ch. 8", pdf: "classicalEconophysics" as const },
+                      { name: "Gini Coefficient", formula: "G = 1 − 2∫L(x)dx", value: `G = ${displayGini.gini.toFixed(3)}`, src: "Classical Econophysics Ch. 8, 13", pdf: "classicalEconophysics" as const },
+                      { name: "Boltzmann Entropy", formula: "S = −Σ p_i·ln(p_i)", value: `S = ${displayEntropy.entropy} (S/S_max = ${pct(displayEntropy.normalizedEntropy)})`, src: "Classical Econophysics Ch. 1", pdf: "classicalEconophysics" as const },
+                      { name: "GBM (drift)", formula: "μ = E[ln(Sₜ/Sₜ₋₁)]·12 + σ²/2", value: `μ = ${(activeParams.muAnnual * 100).toFixed(2)}%/yr`, src: "Mathematical Finance Ch. 6", pdf: "mathematicalFinance" as const },
+                      { name: "GBM (volatility)", formula: "σ = std(log-returns)·√12", value: `σ = ${(activeParams.sigmaAnnual * 100).toFixed(2)}%/yr`, src: "Mathematical Finance Ch. 6", pdf: "mathematicalFinance" as const },
+                      { name: "Monte Carlo (GBM)", formula: "Sₜ = S₀·exp((μ−σ²/2)t + σWₜ)", value: `E[S_${activeParams.horizonMonths}] = ${fmt(displayForecast.expectedFinal)}`, src: "Mathematical Finance Ch. 6", pdf: "mathematicalFinance" as const },
+                      { name: "Binomial Pipeline", formula: "E[R] = Σ vᵢ·p(stageᵢ)", value: `E[R] = ${fmt(displayPipeline.totalExpected)}`, src: "Mathematical Finance Ch. 2–3", pdf: "mathematicalFinance" as const },
+                      { name: "Pareto Tail", formula: "P(m) ~ m^(−α) for m > m₀", value: `Top ${pct(displayBG.paretoFraction)} → ${pct(displayBG.paretoRevenueShare)} of revenue`, src: "Classical Econophysics Ch. 8", pdf: "classicalEconophysics" as const },
+                    ].map(row => (
+                      <tr key={row.name}>
+                        <td className="py-2 pr-4 font-medium">{row.name}</td>
+                        <td className="py-2 pr-4 font-mono text-muted-foreground">{row.formula}</td>
+                        <td className="py-2 pr-4">{row.value}</td>
+                        <td className="py-2">
+                          <a href={PDF_URLS[row.pdf]} target="_blank" rel="noopener noreferrer"
+                            className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">
+                            {row.src}<ExternalLink className="w-2.5 h-2.5" />
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
-      {/* ── Model Reference Table ── */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-medium">Model Reference</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="text-left py-2 pr-4 font-medium text-muted-foreground">Model</th>
-                  <th className="text-left py-2 pr-4 font-medium text-muted-foreground">Formula</th>
-                  <th className="text-left py-2 pr-4 font-medium text-muted-foreground">Current Value</th>
-                  <th className="text-left py-2 font-medium text-muted-foreground">Source</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/50">
-                <tr>
-                  <td className="py-2 pr-4 font-medium">Boltzmann-Gibbs</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">P(m) = (1/T)·e^(−m/T)</td>
-                  <td className="py-2 pr-4">T = {fmt(boltzmannGibbs.temperature)}, λ = {boltzmannGibbs.lambda.toFixed(6)}</td>
-                  <td className="py-2"><a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Classical Econophysics Ch. 8<ExternalLink className="w-2.5 h-2.5" /></a></td>
-                </tr>
-                <tr>
-                  <td className="py-2 pr-4 font-medium">Gini Coefficient</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">G = 1 − 2∫L(x)dx</td>
-                  <td className="py-2 pr-4">G = {gini.gini.toFixed(3)}</td>
-                  <td className="py-2"><a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Classical Econophysics Ch. 8, 13<ExternalLink className="w-2.5 h-2.5" /></a></td>
-                </tr>
-                <tr>
-                  <td className="py-2 pr-4 font-medium">Boltzmann Entropy</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">S = −Σ p_i·ln(p_i)</td>
-                  <td className="py-2 pr-4">S = {entropy.entropy} (S/S_max = {pct(entropy.normalizedEntropy)})</td>
-                  <td className="py-2"><a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Classical Econophysics Ch. 1<ExternalLink className="w-2.5 h-2.5" /></a></td>
-                </tr>
-                <tr>
-                  <td className="py-2 pr-4 font-medium">GBM (drift)</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">μ = E[ln(Sₜ/Sₜ₋₁)]·12 + σ²/2</td>
-                  <td className="py-2 pr-4">μ = {(gbmParams.mu * 100).toFixed(2)}%/yr</td>
-                  <td className="py-2"><a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Mathematical Finance Ch. 6<ExternalLink className="w-2.5 h-2.5" /></a></td>
-                </tr>
-                <tr>
-                  <td className="py-2 pr-4 font-medium">GBM (volatility)</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">σ = std(log-returns)·√12</td>
-                  <td className="py-2 pr-4">σ = {(gbmParams.sigma * 100).toFixed(2)}%/yr</td>
-                  <td className="py-2"><a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Mathematical Finance Ch. 6<ExternalLink className="w-2.5 h-2.5" /></a></td>
-                </tr>
-                <tr>
-                  <td className="py-2 pr-4 font-medium">Monte Carlo (GBM)</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">Sₜ = S₀·exp((μ−σ²/2)t + σWₜ)</td>
-                  <td className="py-2 pr-4">E[S₆] = {fmt(forecast.expectedFinal)}</td>
-                  <td className="py-2"><a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Mathematical Finance Ch. 6<ExternalLink className="w-2.5 h-2.5" /></a></td>
-                </tr>
-                <tr>
-                  <td className="py-2 pr-4 font-medium">Binomial Pipeline</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">E[R] = Σ vᵢ·p(stageᵢ)</td>
-                  <td className="py-2 pr-4">E[R] = {fmt(pipelineValue.totalExpected)}</td>
-                  <td className="py-2"><a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Mathematical Finance Ch. 2–3<ExternalLink className="w-2.5 h-2.5" /></a></td>
-                </tr>
-                <tr>
-                  <td className="py-2 pr-4 font-medium">Pareto Tail</td>
-                  <td className="py-2 pr-4 font-mono text-muted-foreground">P(m) ~ m^(−α) for m &gt; m₀</td>
-                  <td className="py-2 pr-4">Top {pct(boltzmannGibbs.paretoFraction)} → {pct(boltzmannGibbs.paretoRevenueShare)} of revenue</td>
-                  <td className="py-2"><a href={PDF_URLS.classicalEconophysics} target="_blank" rel="noopener noreferrer" className="text-muted-foreground hover:text-indigo-600 inline-flex items-center gap-1 transition-colors">Classical Econophysics Ch. 8<ExternalLink className="w-2.5 h-2.5" /></a></td>
-                </tr>
-              </tbody>
-            </table>
+      {/* ── What-If Panel (right sidebar) ── */}
+      {panelOpen && (
+        <div className="w-72 shrink-0 border-l border-border bg-card overflow-y-auto">
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <h2 className="text-sm font-semibold text-foreground">What-if Analysis</h2>
+              </div>
+              <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => setPanelOpen(false)}>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground mb-4 leading-relaxed">
+              Adjust parameters below. All KPI cards and charts update instantly — no server calls required.
+            </p>
+            <WhatIfPanel
+              params={whatIfParams ?? baselineParams}
+              baseline={baselineParams}
+              onParamsChange={handleParamsChange}
+              onReset={handleReset}
+              isWhatIfMode={isWhatIfMode}
+            />
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      )}
 
       {/* ── Methodology Modal ── */}
       <MethodologyModal open={methodologyOpen} onClose={() => setMethodologyOpen(false)} />
