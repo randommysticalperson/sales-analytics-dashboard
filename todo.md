@@ -92,18 +92,18 @@
 
 ## What-If Analysis Tool
 
-- [ ] Client-side computation engine: port all 8 model formulas to TypeScript (no server round-trips)
-- [ ] WhatIfPanel component: collapsible sidebar/drawer with parameter sliders and inputs
-- [ ] GBM parameters: drift μ slider (−100% to +500%/yr), volatility σ slider (0–300%/yr)
-- [ ] Monte Carlo: forecast horizon slider (1–24 months), number of paths selector (50/100/200/500)
-- [ ] Stage probabilities: inline sliders for Lead, Qualified, Proposal, Negotiation (0–100%)
-- [ ] Deal assumptions: average deal value input, total deal count input
-- [ ] Pareto threshold: percentile slider (80th–99th) for Pareto tail cutoff
-- [ ] Economic temperature: override T directly or derive from deal value/count inputs
-- [ ] Live KPI cards: all 8 KPI values update instantly as parameters change
-- [ ] Live charts: GBM Monte Carlo fan chart, Binomial pipeline bar, Boltzmann histogram all re-render on parameter change
-- [ ] Baseline vs. what-if comparison: show delta badges (▲/▼) on each KPI card vs. the server-computed baseline
-- [ ] Reset to baseline button: restores all parameters to server-computed values
-- [ ] Scenario presets: "Optimistic", "Pessimistic", "Conservative" preset buttons
-- [ ] What-If mode indicator: clear visual signal when the page is showing what-if vs. live data
-- [ ] Vitest tests for the client-side computation engine
+- [x] Client-side computation engine: port all 8 model formulas to TypeScript (no server round-trips)
+- [x] WhatIfPanel component: collapsible sidebar/drawer with parameter sliders and inputs
+- [x] GBM parameters: drift μ slider (−100% to +500%/yr), volatility σ slider (0–300%/yr)
+- [x] Monte Carlo: forecast horizon slider (1–24 months), number of paths selector (50/100/200/500)
+- [x] Stage probabilities: inline sliders for Lead, Qualified, Proposal, Negotiation (0–100%)
+- [x] Deal assumptions: average deal value input, total deal count input
+- [x] Pareto threshold: percentile slider (80th–99th) for Pareto tail cutoff
+- [x] Economic temperature: override T directly or derive from deal value/count inputs
+- [x] Live KPI cards: all 8 KPI values update instantly as parameters change
+- [x] Live charts: GBM Monte Carlo fan chart, Binomial pipeline bar, Boltzmann histogram all re-render on parameter change
+- [x] Baseline vs. what-if comparison: show delta badges (▲/▼) on each KPI card vs. the server-computed baseline
+- [x] Reset to baseline button: restores all parameters to server-computed values
+- [x] Scenario presets: "Optimistic", "Pessimistic", "Conservative" preset buttons
+- [x] What-If mode indicator: clear visual signal when the page is showing what-if vs. live data
+- [x] Vitest tests for the client-side computation engine
