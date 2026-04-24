@@ -4,34 +4,35 @@ import NotFound from "@/pages/NotFound";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import Home from "./pages/Home";
+import CRMLayout from "./components/CRMLayout";
+import Overview from "./pages/Overview";
+import Pipeline from "./pages/Pipeline";
+import Contacts from "./pages/Contacts";
+import Deals from "./pages/Deals";
+import Team from "./pages/Team";
+import Reports from "./pages/Reports";
 
 function Router() {
-  // make sure to consider if you need authentication for certain routes
   return (
     <Switch>
-      <Route path={"/"} component={Home} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
+      <Route path="/" component={() => <CRMLayout><Overview /></CRMLayout>} />
+      <Route path="/pipeline" component={() => <CRMLayout><Pipeline /></CRMLayout>} />
+      <Route path="/contacts" component={() => <CRMLayout><Contacts /></CRMLayout>} />
+      <Route path="/deals" component={() => <CRMLayout><Deals /></CRMLayout>} />
+      <Route path="/team" component={() => <CRMLayout><Team /></CRMLayout>} />
+      <Route path="/reports" component={() => <CRMLayout><Reports /></CRMLayout>} />
+      <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>
   );
 }
 
-// NOTE: About Theme
-// - First choose a default theme according to your design style (dark or light bg), than change color palette in index.css
-//   to keep consistent foreground/background color across components
-// - If you want to make theme switchable, pass `switchable` ThemeProvider and use `useTheme` hook
-
 function App() {
   return (
     <ErrorBoundary>
-      <ThemeProvider
-        defaultTheme="light"
-        // switchable
-      >
+      <ThemeProvider defaultTheme="light">
         <TooltipProvider>
-          <Toaster />
+          <Toaster richColors position="top-right" />
           <Router />
         </TooltipProvider>
       </ThemeProvider>

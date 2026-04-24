@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE `activities` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`type` enum('note','call','email','meeting','task') NOT NULL DEFAULT 'note',\n\t`title` varchar(256) NOT NULL,\n\t`description` text,\n\t`dealId` int,\n\t`contactId` int,\n\t`repId` int,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `activities_id` PRIMARY KEY(`id`)\n)",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 46qLdPmr8T5WSUU.5883a24c7394 --database 8fWVhuXazoF35QTVkC5CVP --execute CREATE TABLE `activities` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`type` enum('note','call','email','meeting','task') NOT NULL DEFAULT 'note',\n\t`title` varchar(256) NOT NULL,\n\t`description` text,\n\t`dealId` int,\n\t`contactId` int,\n\t`repId` int,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `activities_id` PRIMARY KEY(`id`)\n)",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 180
+}

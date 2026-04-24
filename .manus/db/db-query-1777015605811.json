@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE `contacts` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`firstName` varchar(128) NOT NULL,\n\t`lastName` varchar(128) NOT NULL,\n\t`email` varchar(320),\n\t`phone` varchar(64),\n\t`title` varchar(128),\n\t`accountId` int,\n\t`assignedRepId` int,\n\t`status` enum('active','inactive','prospect') NOT NULL DEFAULT 'prospect',\n\t`source` enum('inbound','outbound','referral','event','other') DEFAULT 'other',\n\t`notes` text,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `contacts_id` PRIMARY KEY(`id`)\n)",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 46qLdPmr8T5WSUU.5883a24c7394 --database 8fWVhuXazoF35QTVkC5CVP --execute CREATE TABLE `contacts` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`firstName` varchar(128) NOT NULL,\n\t`lastName` varchar(128) NOT NULL,\n\t`email` varchar(320),\n\t`phone` varchar(64),\n\t`title` varchar(128),\n\t`accountId` int,\n\t`assignedRepId` int,\n\t`status` enum('active','inactive','prospect') NOT NULL DEFAULT 'prospect',\n\t`source` enum('inbound','outbound','referral','event','other') DEFAULT 'other',\n\t`notes` text,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `contacts_id` PRIMARY KEY(`id`)\n)",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 233
+}

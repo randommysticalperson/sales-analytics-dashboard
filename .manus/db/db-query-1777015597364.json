@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE `accounts` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`name` varchar(256) NOT NULL,\n\t`industry` varchar(128),\n\t`website` varchar(256),\n\t`size` enum('1-10','11-50','51-200','201-1000','1000+') DEFAULT '1-10',\n\t`annualRevenue` decimal(15,2),\n\t`country` varchar(128),\n\t`city` varchar(128),\n\t`notes` text,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `accounts_id` PRIMARY KEY(`id`)\n)",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway04.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 46qLdPmr8T5WSUU.5883a24c7394 --database 8fWVhuXazoF35QTVkC5CVP --execute CREATE TABLE `accounts` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`name` varchar(256) NOT NULL,\n\t`industry` varchar(128),\n\t`website` varchar(256),\n\t`size` enum('1-10','11-50','51-200','201-1000','1000+') DEFAULT '1-10',\n\t`annualRevenue` decimal(15,2),\n\t`country` varchar(128),\n\t`city` varchar(128),\n\t`notes` text,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `accounts_id` PRIMARY KEY(`id`)\n)",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 289
+}
