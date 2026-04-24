@@ -24,7 +24,20 @@ import {
   getAllReps,
   updateContact,
   updateDeal,
+  getClosedWonDealValues,
+  getAllDealValues,
+  getRepRevenueForEntropy,
+  getMonthlyRevenueSeries,
 } from "./db";
+import {
+  boltzmannGibbs,
+  giniAndLorenz,
+  revenueEntropy,
+  estimateGBMParams,
+  monteCarloForecast,
+  binomialPipelineValue,
+  economicTemperatureTrend,
+} from "./econophysics";
 
 export const appRouter = router({
   system: systemRouter,
@@ -272,6 +285,48 @@ export const appRouter = router({
     dealsByStage: protectedProcedure
       .input(z.object({ repId: z.number().optional() }))
       .query(({ input }) => getDealsByStage(input.repId)),
+  }),
+  // ─── Econophysics Analytics ───────────────────────────────────────────────
+  econophysics: router({
+    full: protectedProcedure.query(async () => {
+      const [closedWonValues, allDeals, repRevenues, monthlySeries] = await Promise.all([
+        getClosedWonDealValues(),
+        getAllDealValues(),
+        getRepRevenueForEntropy(),
+        getMonthlyRevenueSeries(),
+      ]);
+
+      const bg = boltzmannGibbs(closedWonValues);
+      const repRevenueValues = repRevenues.map(r => r.revenue);
+      const giniData = giniAndLorenz(repRevenueValues);
+      const entropyData = revenueEntropy(repRevenueValues);
+      const monthlyValues = monthlySeries.map(m => m.totalValue);
+      const gbmParams = estimateGBMParams(monthlyValues);
+      const lastRevenue = monthlyValues[monthlyValues.length - 1] ?? 100000;
+      const forecast = monteCarloForecast(lastRevenue, gbmParams.muMonthly, gbmParams.sigmaMonthly, 6, 200);
+      const pipelineValue = binomialPipelineValue(allDeals);
+      const tempTrend = economicTemperatureTrend(monthlySeries);
+
+      return {
+        boltzmannGibbs: bg,
+        gini: giniData,
+        entropy: entropyData,
+        gbmParams,
+        forecast: {
+          median: forecast.median,
+          p10: forecast.p10,
+          p90: forecast.p90,
+          p25: forecast.p25,
+          p75: forecast.p75,
+          expectedFinal: forecast.expectedFinal,
+          paths: forecast.paths,
+        },
+        pipelineValue,
+        temperatureTrend: tempTrend,
+        repRevenues,
+        monthlySeries,
+      };
+    }),
   }),
 });
 

@@ -11,6 +11,7 @@ import Contacts from "./pages/Contacts";
 import Deals from "./pages/Deals";
 import Team from "./pages/Team";
 import Reports from "./pages/Reports";
+import Econophysics from "./pages/Econophysics";
 
 function Router() {
   return (
@@ -21,6 +22,7 @@ function Router() {
       <Route path="/deals" component={() => <CRMLayout><Deals /></CRMLayout>} />
       <Route path="/team" component={() => <CRMLayout><Team /></CRMLayout>} />
       <Route path="/reports" component={() => <CRMLayout><Reports /></CRMLayout>} />
+      <Route path="/econophysics" component={() => <CRMLayout><Econophysics /></CRMLayout>} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>

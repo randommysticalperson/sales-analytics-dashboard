@@ -5,6 +5,7 @@ import {
   BarChart3,
   Building2,
   ChevronRight,
+  FlaskConical,
   Kanban,
   LayoutDashboard,
   LogOut,
@@ -24,6 +25,7 @@ const NAV_ITEMS = [
   { label: "Deals", href: "/deals", icon: Building2 },
   { label: "Team", href: "/team", icon: TrendingUp },
   { label: "Reports", href: "/reports", icon: BarChart3 },
+  { label: "Econophysics", href: "/econophysics", icon: FlaskConical },
 ];
 
 function UserAvatar({ name, role }: { name?: string | null; role?: string }) {
@@ -135,22 +137,22 @@ export default function CRMLayout({ children }: { children: ReactNode }) {
           {NAV_ITEMS.map(({ label, href, icon: Icon }) => {
             const isActive = href === "/" ? location === "/" : location.startsWith(href);
             return (
-              <Link key={href} href={href}>
-                <a
-                  className={cn(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group",
-                    isActive
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                      : "text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
-                  )}
-                  title={collapsed ? label : undefined}
-                >
-                  <Icon className={cn("w-4 h-4 flex-shrink-0", isActive && "text-primary")} />
-                  {!collapsed && <span>{label}</span>}
-                  {!collapsed && isActive && (
-                    <div className="ml-auto w-1.5 h-1.5 rounded-full bg-primary" />
-                  )}
-                </a>
+              <Link
+                key={href}
+                href={href}
+                className={cn(
+                  "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group",
+                  isActive
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+                )}
+                title={collapsed ? label : undefined}
+              >
+                <Icon className={cn("w-4 h-4 flex-shrink-0", isActive && "text-primary")} />
+                {!collapsed && <span>{label}</span>}
+                {!collapsed && isActive && (
+                  <div className="ml-auto w-1.5 h-1.5 rounded-full bg-primary" />
+                )}
               </Link>
             );
           })}

@@ -633,3 +633,65 @@ export async function getDealsByStage(repId?: number) {
     .where(conditions.length > 0 ? and(...conditions) : undefined)
     .groupBy(deals.stage);
 }
+
+// ─── Econophysics Data Queries ────────────────────────────────────────────────
+
+/** Returns all closed-won deal values for Boltzmann-Gibbs / Gini / Pareto analysis */
+export async function getClosedWonDealValues(): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({ value: deals.value })
+    .from(deals)
+    .where(eq(deals.stage, "closed_won"));
+  return rows.map(r => Number(r.value)).filter(v => v > 0);
+}
+
+/** Returns all deal values (any stage) for pipeline analysis */
+export async function getAllDealValues(): Promise<{ stage: string; value: number; title: string }[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({ stage: deals.stage, value: deals.value, title: deals.title })
+    .from(deals);
+  return rows.map(r => ({ stage: r.stage, value: Number(r.value), title: r.title }));
+}
+
+/** Returns per-rep revenue totals for entropy / Gini analysis */
+export async function getRepRevenueForEntropy(): Promise<{ repName: string; revenue: number }[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({
+      repName: salesReps.name,
+      revenue: sql<number>`coalesce(sum(${deals.value}), 0)`,
+    })
+    .from(salesReps)
+    .leftJoin(deals, and(eq(deals.assignedRepId, salesReps.id), eq(deals.stage, "closed_won")))
+    .groupBy(salesReps.id, salesReps.name);
+  return rows.map(r => ({ repName: r.repName, revenue: Number(r.revenue) }));
+}
+
+/** Returns monthly revenue totals for GBM parameter estimation */
+export async function getMonthlyRevenueSeries(): Promise<{ label: string; totalValue: number; dealCount: number }[]> {
+  const db = await getDb();
+  if (!db) return [];
+  // Use raw SQL to avoid Drizzle template issues with DATE_FORMAT in GROUP BY
+  const rows = await db.execute(sql`
+    SELECT
+      DATE_FORMAT(actualCloseDate, '%Y-%m') AS month,
+      COALESCE(SUM(value), 0) AS totalValue,
+      COUNT(*) AS dealCount
+    FROM deals
+    WHERE stage = 'closed_won' AND actualCloseDate IS NOT NULL
+    GROUP BY DATE_FORMAT(actualCloseDate, '%Y-%m')
+    ORDER BY DATE_FORMAT(actualCloseDate, '%Y-%m') ASC
+  `);
+  const result = Array.isArray(rows) ? rows[0] : rows;
+  if (!Array.isArray(result)) return [];
+  return (result as any[]).map((r: any) => ({
+    label: r.month ?? "",
+    totalValue: Number(r.totalValue ?? 0),
+    dealCount: Number(r.dealCount ?? 0),
+  }));
+}
