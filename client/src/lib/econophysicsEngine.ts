@@ -23,31 +23,35 @@ export function boltzmannGibbs(
   values: number[],
   paretoPercentile = 0.9
 ): BoltzmannResult {
-  if (values.length === 0) {
+  // Defensive: filter out any non-finite or non-positive values
+  const safeValues = values.filter(v => typeof v === 'number' && Number.isFinite(v) && v > 0);
+  if (safeValues.length === 0) {
     return { temperature: 0, lambda: 0, histogram: [], paretoThreshold: 0, paretoFraction: 0, paretoRevenueShare: 0 };
   }
-  const sorted = [...values].sort((a, b) => a - b);
-  const temperature = values.reduce((s, v) => s + v, 0) / values.length;
+  const sorted = [...safeValues].sort((a, b) => a - b);
+  const temperature = safeValues.reduce((s, v) => s + v, 0) / safeValues.length;
   const lambda = temperature > 0 ? 1 / temperature : 0;
 
   // Build histogram (10 bins)
-  const min = sorted[0];
-  const max = sorted[sorted.length - 1];
+  const min = sorted[0]!;
+  const max = sorted[sorted.length - 1]!;
   const nBins = 10;
-  const binWidth = (max - min) / nBins || 1;
+  const range = max - min;
+  const binWidth = range > 0 ? range / nBins : 1;
   const bins = Array.from({ length: nBins }, (_, i) => ({
     lo: min + i * binWidth,
     hi: min + (i + 1) * binWidth,
     count: 0,
   }));
-  for (const v of values) {
-    const idx = Math.min(Math.floor((v - min) / binWidth), nBins - 1);
-    bins[idx].count++;
+  for (const v of safeValues) {
+    const rawIdx = range > 0 ? Math.floor((v - min) / binWidth) : 0;
+    const idx = Math.max(0, Math.min(isFinite(rawIdx) ? rawIdx : 0, nBins - 1));
+    bins[idx]!.count++;
   }
   const histogram = bins.map(b => {
     const mid = (b.lo + b.hi) / 2;
     const expected = lambda > 0
-      ? values.length * (Math.exp(-lambda * b.lo) - Math.exp(-lambda * b.hi))
+      ? safeValues.length * (Math.exp(-lambda * b.lo) - Math.exp(-lambda * b.hi))
       : 0;
     const lo = b.lo >= 1000 ? `$${(b.lo / 1000).toFixed(0)}K` : `$${b.lo.toFixed(0)}`;
     const hi = b.hi >= 1000 ? `$${(b.hi / 1000).toFixed(0)}K` : `$${b.hi.toFixed(0)}`;
@@ -56,10 +60,10 @@ export function boltzmannGibbs(
 
   // Pareto tail
   const thresholdIdx = Math.floor(paretoPercentile * sorted.length);
-  const paretoThreshold = sorted[thresholdIdx] ?? sorted[sorted.length - 1];
-  const paretoValues = values.filter(v => v >= paretoThreshold);
-  const paretoFraction = paretoValues.length / values.length;
-  const totalRevenue = values.reduce((s, v) => s + v, 0);
+  const paretoThreshold = sorted[thresholdIdx] ?? sorted[sorted.length - 1]!;
+  const paretoValues = safeValues.filter(v => v >= paretoThreshold);
+  const paretoFraction = paretoValues.length / safeValues.length;
+  const totalRevenue = safeValues.reduce((s, v) => s + v, 0);
   const paretoRevenue = paretoValues.reduce((s, v) => s + v, 0);
   const paretoRevenueShare = totalRevenue > 0 ? paretoRevenue / totalRevenue : 0;
 

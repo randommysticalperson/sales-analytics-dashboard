@@ -369,7 +369,7 @@ export default function Econophysics() {
   const baselineParams = useMemo<WhatIfParams>(() => {
     const serverProbs = stageProbData ?? DEFAULT_STAGE_PROBS;
     const gbm = data?.gbmParams;
-    const dealValues = data?.boltzmannGibbs?.histogram?.flatMap((b: any) => Array(b.count).fill(b.binMid)) ?? [];
+    const dealValues = data?.boltzmannGibbs?.histogram?.flatMap((b: any) => Array(Math.max(0, b.count ?? 0)).fill(b.bin ?? 0)).filter((v: number) => v > 0) ?? [];
     const avgDeal = dealValues.length > 0 ? dealValues.reduce((s: number, v: number) => s + v, 0) / dealValues.length : 100_000;
     const dealCount = dealValues.length || 10;
     return {
