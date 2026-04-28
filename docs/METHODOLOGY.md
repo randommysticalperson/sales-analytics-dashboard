@@ -216,3 +216,101 @@ This is the standard binomial (risk-neutral) valuation approach from mathematica
 All models in this section are **descriptive and exploratory**. They are intended to surface patterns and prompt questions, not to replace human judgment or serve as the sole basis for business decisions. The quality of every output depends directly on the quality and completeness of the underlying CRM data. Incomplete deal records, missing rep assignments, or inconsistent stage updates will degrade all metrics simultaneously.
 
 The econophysics framework is most powerful when applied to a **large, stable dataset** — ideally several years of closed deals with consistent data entry. With the seed data currently in the dashboard (a few months of synthetic records), the models are illustrative. As real data accumulates, the estimates will become progressively more reliable.
+
+---
+
+## 9. Poisson Deal-Arrival Model
+
+*Source: Finan, "A Probability Course for the Actuaries" (PV2020), §7.4 — Poisson Random Variable*
+
+### What it does
+
+The Poisson distribution models the number of events that occur in a fixed time interval when each event is rare and independent of all others. Applied to sales, it models the number of **new deals entering the pipeline per month**. Given a historical average arrival rate λ (deals per month), the model computes the probability of observing exactly k new deals in the next month:
+
+> P(X = k) = e^(−λ) · λ^k / k!
+
+The dashboard plots the full probability mass function as a bar chart, highlights the most likely outcome (the mode), and computes a 90 % confidence interval for next-month deal volume. It also shows the **Poisson mean** (λ) and **variance** (also λ — a distinctive property of the Poisson distribution).
+
+### Assumptions
+
+- **Stationarity.** The arrival rate λ is assumed constant over time. If the business is growing rapidly or has strong seasonality, a single λ will underestimate variance.
+- **Independence.** Each deal arrives independently of all others. In practice, a marketing campaign or trade show can cause a burst of correlated arrivals that violates this assumption.
+- **Rare events.** The Poisson approximation to the binomial is most accurate when the probability of any single prospect converting in a given month is small and the prospect pool is large (n ≥ 20, p ≤ 0.05 per Finan §7.5).
+
+### Limitations
+
+- The model estimates λ from the observed monthly average. With fewer than 6 months of data, this estimate is unreliable.
+- It does not distinguish between deal types, rep territories, or lead sources — all arrivals are treated as equivalent.
+- The Poisson model is symmetric in the sense that mean equals variance. If your observed variance is substantially higher than the mean (overdispersion), a Negative Binomial model is more appropriate.
+
+---
+
+## 10. Geometric / Negative-Binomial Sales Cycle Model
+
+*Source: Finan, "A Probability Course for the Actuaries" (PV2020), §7.6 — Geometric Random Variable; §7.7 — Negative Binomial Random Variable*
+
+### What it does
+
+The **Geometric distribution** models the number of monthly follow-up attempts (trials) needed before a deal closes for the first time, given a constant per-period close probability *p*:
+
+> P(X = n) = p · (1 − p)^(n−1),  E(X) = 1/p,  Var(X) = (1−p)/p²
+
+The **Negative Binomial** generalises this to the number of attempts needed to achieve *r* closures (e.g., to close the 3rd deal of the quarter):
+
+> P(Y = n) = C(n−1, r−1) · p^r · (1−p)^(n−r),  E(Y) = r/p
+
+The dashboard uses the Geometric model to estimate the **expected sales cycle length** (in months) from the observed historical close rate, and plots the probability mass function so managers can see the distribution of cycle lengths. The Negative Binomial extension shows the distribution of time to reach a quota target of *r* closed deals.
+
+### Assumptions
+
+- **Constant close probability.** Each period is an independent Bernoulli trial with the same probability *p* of closing. In reality, close probability typically increases as a deal ages and progresses through stages.
+- **Memoryless property.** The Geometric distribution is memoryless: P(X > m + n | X > m) = P(X > n). A deal that has been open for 3 months is no more or less likely to close next month than a brand-new deal with the same stage probability. This is a strong simplification.
+- **Single close per deal.** The Geometric model counts the first success. It does not model renewals or upsells.
+
+### Limitations
+
+- The memoryless assumption is violated in most real sales cycles, where older deals in a given stage are less likely to close than newer ones. A survival analysis approach (using the Exponential or Weibull hazard function) would be more accurate for aged pipelines.
+- The model requires a reliable estimate of *p* (the per-period close rate). With fewer than 30 closed deals, the estimate is noisy.
+- The Negative Binomial quota model assumes all deals are equivalent. In practice, quota attainment depends on deal mix and rep assignment.
+
+---
+
+## 11. Bayesian Win-Rate Updater
+
+*Source: Finan, "A Probability Course for the Actuaries" (PV2020), §5.2 — Bayes' Formula and the Law of Total Probability*
+
+### What it does
+
+Bayes' theorem provides a principled way to update a prior belief about win rate in the light of new evidence. The dashboard implements a **Beta-Binomial Bayesian model**:
+
+1. **Prior:** Start with a Beta(α₀, β₀) prior distribution over the win rate *p*. The default is α₀ = β₀ = 1 (uniform — no prior knowledge), but the user can set an informative prior.
+2. **Likelihood:** Given *W* wins and *L* losses observed in the current period, the likelihood is Binomial(W + L, p).
+3. **Posterior:** By conjugacy, the posterior is Beta(α₀ + W, β₀ + L), with posterior mean:
+
+> E(p | data) = (α₀ + W) / (α₀ + β₀ + W + L)
+
+The dashboard plots the prior and posterior Beta distributions side by side, shows the posterior mean win rate, and computes a 90 % credible interval (the range containing 90 % of the posterior probability mass). As more deals close, the posterior narrows and converges on the true win rate.
+
+Extended Bayes' formula (Law of Total Probability) is used to decompose the overall win rate into stage-conditional win rates, weighting each stage by its share of the pipeline:
+
+> P(Win) = Σᵢ P(Win | Stage i) · P(Stage i)
+
+### Assumptions
+
+- **Exchangeability.** All deals are treated as independent draws from the same Bernoulli process. Deals from different reps, products, or customer segments are pooled.
+- **Stationarity.** The true win rate *p* is assumed constant over the observation window. A business undergoing rapid change (new product, new market) will have a non-stationary *p*.
+- **Beta prior is appropriate.** The Beta distribution is the conjugate prior for the Binomial likelihood, making the posterior analytically tractable. It is a flexible family that can represent a wide range of prior beliefs.
+
+### Limitations
+
+- Pooling all deals into a single Bayesian update ignores heterogeneity across reps, products, and segments. A hierarchical Bayesian model would be more appropriate for large teams.
+- The credible interval is only as meaningful as the prior. With a strongly informative prior and few data points, the interval will be dominated by the prior rather than the data.
+- The model updates on closed deals only. Open deals in the pipeline carry information about future win rates that is not captured here.
+
+---
+
+## General Caveats (updated)
+
+The three actuarial models above (Poisson, Geometric/Negative Binomial, Bayesian) are grounded in the rigorous probability theory developed in Marcel B. Finan's *"A Probability Course for the Actuaries"* (PV2020, Arkansas Tech University). They complement the econophysics models from Cockshott et al. and Wallace/Durham by providing a frequentist and Bayesian statistical lens alongside the statistical-mechanics perspective.
+
+Together, the eleven models form a multi-paradigm analytics framework: statistical mechanics (Boltzmann-Gibbs, temperature, Gini, entropy, Pareto), stochastic finance (GBM, Monte Carlo), decision-theoretic probability (Binomial pipeline EV), and actuarial probability (Poisson arrival, Geometric cycle, Bayesian win-rate). Each paradigm makes different assumptions and surfaces different aspects of pipeline risk.

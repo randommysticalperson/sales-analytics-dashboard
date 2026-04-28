@@ -7,6 +7,9 @@ import {
   binomialPipelineValue,
   monteCarloForecast,
   STAGE_WIN_PROBABILITIES,
+  poissonDealArrival,
+  geometricSalesCycle,
+  bayesianWinRate,
 } from "./econophysics";
 
 // ─── Gini Coefficient & Lorenz Curve ─────────────────────────────────────────
@@ -232,5 +235,162 @@ describe("monteCarloForecast", () => {
     expect(result.median).toHaveLength(7);
     expect(result.p10).toHaveLength(7);
     expect(result.p90).toHaveLength(7);
+  });
+});
+
+// ─── Poisson Deal-Arrival Model (Finan PV2020 §7.4) ──────────────────────────
+describe("poissonDealArrival", () => {
+
+  it("estimates lambda as the mean of monthly deal counts", () => {
+    const counts = [4, 6, 5, 7, 3, 5]; // mean = 5
+    const result = poissonDealArrival(counts);
+    expect(result.lambda).toBeCloseTo(5, 1);
+  });
+
+  it("uses override lambda when provided", () => {
+    const result = poissonDealArrival([2, 3, 4], 10);
+    // overrideLambda=10 should be used instead of mean([2,3,4])=3
+    expect(result.lambda).toBeCloseTo(10, 1);
+  });
+
+  it("PMF probabilities sum to approximately 1", () => {
+    const result = poissonDealArrival([5, 5, 5, 5, 5]);
+    const total = result.pmf.reduce((s: number, e: { probability: number }) => s + e.probability, 0);
+    expect(total).toBeCloseTo(1.0, 1);
+  });
+
+  it("mode equals floor(lambda) for integer lambda", () => {
+    // For Poisson with integer lambda, mode = lambda (or lambda-1, both valid)
+    const result = poissonDealArrival([7, 7, 7, 7, 7]);
+    // mode should be close to lambda (floor(lambda) or lambda for integer)
+    expect(result.mode).toBeGreaterThanOrEqual(Math.floor(result.lambda) - 1);
+    expect(result.mode).toBeLessThanOrEqual(Math.ceil(result.lambda));
+  });
+
+  it("CI90 low is less than or equal to mode", () => {
+    const result = poissonDealArrival([5, 6, 4, 5, 6]);
+    expect(result.ci90Low).toBeLessThanOrEqual(result.mode);
+  });
+
+  it("CI90 high is greater than or equal to mode", () => {
+    const result = poissonDealArrival([5, 6, 4, 5, 6]);
+    expect(result.ci90High).toBeGreaterThanOrEqual(result.mode);
+  });
+
+  it("handles empty counts by using override lambda", () => {
+    const result = poissonDealArrival([], 3);
+    expect(result.lambda).toBeCloseTo(3, 1);
+    expect(result.pmf.length).toBeGreaterThan(0);
+  });
+});
+
+// ─── Geometric / Negative-Binomial Sales Cycle (Finan PV2020 §7.6–7.7) ───────
+describe("geometricSalesCycle", () => {
+
+  it("E(X) = 1/p for geometric distribution", () => {
+    // closedDeals=10, totalPeriods=40 → p = 10/40 = 0.25, E(X) = 1/0.25 = 4
+    const result = geometricSalesCycle(10, 40, 5);
+    expect(result.expectedCycleMonths).toBeCloseTo(1 / 0.25, 0);
+  });
+
+  it("uses overrideCloseRate when provided", () => {
+    const result = geometricSalesCycle(10, 40, 5, 0.5); // override p = 0.5
+    expect(result.closeRatePerPeriod).toBeCloseTo(0.5, 2);
+    expect(result.expectedCycleMonths).toBeCloseTo(2, 0);
+  });
+
+  it("variance = (1-p)/p^2", () => {
+    const p = 0.2;
+    // closedDeals=10, totalPeriods=50 → p = 10/50 = 0.2
+    const result = geometricSalesCycle(10, 50, 3);
+    const expected = (1 - p) / (p * p);
+    expect(result.varianceCycles).toBeCloseTo(expected, 1);
+  });
+
+  it("E(Y) = r/p for negative-binomial (time to r-th close)", () => {
+    // closedDeals=10, totalPeriods=20 → p = 0.5
+    const r = 4;
+    const result = geometricSalesCycle(10, 20, r);
+    expect(result.expectedMonthsToQuota).toBeCloseTo(r / 0.5, 0);
+  });
+
+  it("PMF probabilities are all non-negative", () => {
+    const result = geometricSalesCycle(5, 10, 3, 0.3);
+    for (const entry of result.pmf) {
+      expect(entry.probability).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("NB PMF probabilities are all non-negative", () => {
+    const result = geometricSalesCycle(5, 10, 3, 0.3);
+    for (const entry of result.nbPmf) {
+      expect(entry.probability).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("close rate is clamped to (0, 1)", () => {
+    const result = geometricSalesCycle(5, 10, 3, 1.5); // over 100%
+    expect(result.closeRatePerPeriod).toBeLessThanOrEqual(1);
+    expect(result.closeRatePerPeriod).toBeGreaterThan(0);
+  });
+});
+
+// ─── Bayesian Win-Rate Updater (Finan PV2020 §5.2) ───────────────────────────
+describe("bayesianWinRate", () => {
+
+  it("posterior alpha = prior alpha + wins", () => {
+    const result = bayesianWinRate(10, 5, 2, 3);
+    expect(result.posteriorAlpha).toBeCloseTo(2 + 10, 5);
+  });
+
+  it("posterior beta = prior beta + losses", () => {
+    const result = bayesianWinRate(10, 5, 2, 3);
+    expect(result.posteriorBeta).toBeCloseTo(3 + 5, 5);
+  });
+
+  it("posterior mean = alpha / (alpha + beta)", () => {
+    const result = bayesianWinRate(10, 5, 2, 3);
+    const alpha = 2 + 10;
+    const beta = 3 + 5;
+    expect(result.posteriorMean).toBeCloseTo(alpha / (alpha + beta), 4);
+  });
+
+  it("posterior mode is between 0 and 1", () => {
+    const result = bayesianWinRate(20, 10, 1, 1);
+    expect(result.posteriorMode).toBeGreaterThanOrEqual(0);
+    expect(result.posteriorMode).toBeLessThanOrEqual(1);
+  });
+
+  it("CI90 low < posterior mean < CI90 high", () => {
+    const result = bayesianWinRate(15, 10, 1, 1);
+    expect(result.ci90Low).toBeLessThan(result.posteriorMean);
+    expect(result.ci90High).toBeGreaterThan(result.posteriorMean);
+  });
+
+  it("posterior curve has 101 points covering [0, 1]", () => {
+    const result = bayesianWinRate(10, 5, 1, 1);
+    expect(result.posteriorCurve).toHaveLength(101);
+    expect(result.posteriorCurve[0].p).toBeCloseTo(0, 3);
+    expect(result.posteriorCurve[100].p).toBeCloseTo(1, 3);
+  });
+
+  it("stage decomposition sums to total probability of win", () => {
+    const result = bayesianWinRate(10, 5, 1, 1);
+    const sumContributions = result.stageDecomposition.reduce(
+      (s: number, d: { contribution: number }) => s + d.contribution, 0
+    );
+    expect(sumContributions).toBeCloseTo(result.totalProbabilityWin, 3);
+  });
+
+  it("handles zero wins gracefully", () => {
+    const result = bayesianWinRate(0, 10, 1, 1);
+    expect(result.posteriorMean).toBeGreaterThan(0); // prior keeps it > 0
+    expect(result.posteriorMean).toBeLessThan(0.5);
+  });
+
+  it("handles zero losses gracefully", () => {
+    const result = bayesianWinRate(10, 0, 1, 1);
+    expect(result.posteriorMean).toBeGreaterThan(0.5);
+    expect(result.posteriorMean).toBeLessThanOrEqual(1);
   });
 });

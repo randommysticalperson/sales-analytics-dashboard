@@ -732,3 +732,37 @@ export async function updateStageProbability(
     ON DUPLICATE KEY UPDATE probability = ${probability}, updatedByUserId = ${userId}
   `);
 }
+
+/** Returns monthly deal counts (closed_won) for Poisson arrival model */
+export async function getMonthlyDealCounts(): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.execute(sql`
+    SELECT COUNT(*) AS dealCount
+    FROM deals
+    WHERE stage = 'closed_won' AND actualCloseDate IS NOT NULL
+    GROUP BY DATE_FORMAT(actualCloseDate, '%Y-%m')
+    ORDER BY DATE_FORMAT(actualCloseDate, '%Y-%m') ASC
+  `);
+  const result = Array.isArray(rows) ? rows[0] : rows;
+  if (!Array.isArray(result)) return [];
+  return (result as any[]).map(r => Number(r.dealCount));
+}
+
+/** Returns total wins and losses counts for Bayesian win-rate model */
+export async function getWinsLossesCount(): Promise<{ wins: number; losses: number; totalPeriods: number }> {
+  const db = await getDb();
+  if (!db) return { wins: 0, losses: 0, totalPeriods: 0 };
+  const rows = await db.execute(sql`
+    SELECT
+      SUM(CASE WHEN stage = 'closed_won' THEN 1 ELSE 0 END) AS wins,
+      SUM(CASE WHEN stage = 'closed_lost' THEN 1 ELSE 0 END) AS losses,
+      COUNT(DISTINCT DATE_FORMAT(actualCloseDate, '%Y-%m')) AS totalPeriods
+    FROM deals
+    WHERE stage IN ('closed_won', 'closed_lost') AND actualCloseDate IS NOT NULL
+  `);
+  const result = Array.isArray(rows) ? rows[0] : rows;
+  if (!Array.isArray(result) || result.length === 0) return { wins: 0, losses: 0, totalPeriods: 0 };
+  const r = (result as any[])[0];
+  return { wins: Number(r.wins ?? 0), losses: Number(r.losses ?? 0), totalPeriods: Number(r.totalPeriods ?? 0) };
+}

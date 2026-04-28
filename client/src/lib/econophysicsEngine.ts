@@ -344,3 +344,309 @@ export const SCENARIO_PRESETS: Record<string, Partial<WhatIfParams>> = {
     stageProbabilities: { lead: 0.10, qualified: 0.25, proposal: 0.45, negotiation: 0.70, closed_won: 1.00, closed_lost: 0.00 },
   },
 };
+
+// ─── Actuarial Models (Finan PV2020) ─────────────────────────────────────────
+// Source: Marcel B. Finan, "A Probability Course for the Actuaries" (PV2020)
+//         Arkansas Tech University, Revised 2020 Edition
+
+// ─── 9. Poisson Deal-Arrival Model ───────────────────────────────────────────
+// P(X = k) = e^(-λ) · λ^k / k!   where λ = mean arrivals per period
+// E(X) = Var(X) = λ
+// Ref: Finan PV2020 §7.4
+
+export interface PoissonResult {
+  lambda: number;           // estimated arrival rate (deals/month)
+  pmf: { k: number; probability: number; cumulative: number }[];
+  mode: number;             // most likely deal count
+  ci90Low: number;          // 5th percentile (lower bound of 90% CI)
+  ci90High: number;         // 95th percentile (upper bound of 90% CI)
+  variance: number;         // = lambda for Poisson
+}
+
+export function poissonDealArrival(
+  monthlyDealCounts: number[],
+  lambdaOverride?: number
+): PoissonResult {
+  const validCounts = monthlyDealCounts.filter(c => c >= 0 && Number.isFinite(c));
+  const lambda = lambdaOverride !== undefined
+    ? lambdaOverride
+    : (validCounts.length > 0 ? validCounts.reduce((s, c) => s + c, 0) / validCounts.length : 1);
+
+  const safeLambda = Math.max(0.01, lambda);
+
+  // Compute PMF up to k = max(30, 3*lambda)
+  const kMax = Math.max(30, Math.ceil(safeLambda * 4));
+  const pmf: { k: number; probability: number; cumulative: number }[] = [];
+  let cumulative = 0;
+
+  // Use log-factorial for numerical stability
+  function logFactorial(n: number): number {
+    if (n <= 1) return 0;
+    let s = 0;
+    for (let i = 2; i <= n; i++) s += Math.log(i);
+    return s;
+  }
+
+  let modeK = 0;
+  let modeProb = 0;
+  for (let k = 0; k <= kMax; k++) {
+    const logP = k * Math.log(safeLambda) - safeLambda - logFactorial(k);
+    const p = Math.exp(logP);
+    cumulative = Math.min(1, cumulative + p);
+    pmf.push({ k, probability: Math.round(p * 10000) / 10000, cumulative: Math.round(cumulative * 10000) / 10000 });
+    if (p > modeProb) { modeProb = p; modeK = k; }
+  }
+
+  // 90% CI: find 5th and 95th percentile
+  let ci90Low = 0;
+  let ci90High = kMax;
+  for (const entry of pmf) {
+    if (entry.cumulative >= 0.05 && ci90Low === 0) ci90Low = entry.k;
+    if (entry.cumulative >= 0.95) { ci90High = entry.k; break; }
+  }
+
+  return { lambda: Math.round(safeLambda * 100) / 100, pmf, mode: modeK, ci90Low, ci90High, variance: Math.round(safeLambda * 100) / 100 };
+}
+
+// ─── 10. Geometric / Negative-Binomial Sales Cycle Model ─────────────────────
+// Geometric: P(X = n) = p·(1-p)^(n-1),  E(X) = 1/p,  Var(X) = (1-p)/p²
+// Neg-Binomial: P(Y = n) = C(n-1,r-1)·p^r·(1-p)^(n-r),  E(Y) = r/p
+// Ref: Finan PV2020 §7.6, §7.7
+
+export interface GeometricResult {
+  closeRatePerPeriod: number;   // p — probability of closing in any given month
+  expectedCycleMonths: number;  // E(X) = 1/p
+  varianceCycles: number;       // Var(X) = (1-p)/p²
+  pmf: { n: number; probability: number; cumulative: number }[];
+  // Negative Binomial extension: time to r-th close
+  quotaTarget: number;          // r — number of closes required
+  expectedMonthsToQuota: number; // E(Y) = r/p
+  nbPmf: { n: number; probability: number; cumulative: number }[];
+}
+
+export function geometricSalesCycle(
+  closedDeals: number,
+  totalPeriods: number,
+  quotaTarget = 3,
+  pOverride?: number
+): GeometricResult {
+  const p = pOverride !== undefined
+    ? Math.max(0.001, Math.min(0.999, pOverride))
+    : Math.max(0.001, Math.min(0.999, totalPeriods > 0 ? closedDeals / totalPeriods : 0.2));
+
+  const q = 1 - p;
+  const expectedCycleMonths = 1 / p;
+  const varianceCycles = q / (p * p);
+
+  // Geometric PMF up to 3× expected cycle or 48 months
+  const nMax = Math.min(48, Math.ceil(expectedCycleMonths * 4));
+  const pmf: { n: number; probability: number; cumulative: number }[] = [];
+  let cumGeo = 0;
+  for (let n = 1; n <= nMax; n++) {
+    const prob = p * Math.pow(q, n - 1);
+    cumGeo = Math.min(1, cumGeo + prob);
+    pmf.push({ n, probability: Math.round(prob * 10000) / 10000, cumulative: Math.round(cumGeo * 10000) / 10000 });
+  }
+
+  // Negative Binomial PMF: number of trials to get r successes
+  const r = Math.max(1, Math.round(quotaTarget));
+  const expectedMonthsToQuota = r / p;
+  const nbMax = Math.min(120, Math.ceil(expectedMonthsToQuota * 4));
+  const nbPmf: { n: number; probability: number; cumulative: number }[] = [];
+  let cumNB = 0;
+
+  function logBinomCoeff(n: number, k: number): number {
+    if (k < 0 || k > n) return -Infinity;
+    let s = 0;
+    for (let i = 0; i < k; i++) {
+      s += Math.log(n - i) - Math.log(i + 1);
+    }
+    return s;
+  }
+
+  for (let n = r; n <= nbMax; n++) {
+    const logP = logBinomCoeff(n - 1, r - 1) + r * Math.log(p) + (n - r) * Math.log(q);
+    const prob = Math.exp(logP);
+    cumNB = Math.min(1, cumNB + prob);
+    nbPmf.push({ n, probability: Math.round(prob * 10000) / 10000, cumulative: Math.round(cumNB * 10000) / 10000 });
+  }
+
+  return {
+    closeRatePerPeriod: Math.round(p * 1000) / 1000,
+    expectedCycleMonths: Math.round(expectedCycleMonths * 10) / 10,
+    varianceCycles: Math.round(varianceCycles * 100) / 100,
+    pmf,
+    quotaTarget: r,
+    expectedMonthsToQuota: Math.round(expectedMonthsToQuota * 10) / 10,
+    nbPmf,
+  };
+}
+
+// ─── 11. Bayesian Win-Rate Updater ────────────────────────────────────────────
+// Prior: Beta(α₀, β₀)   Posterior: Beta(α₀+W, β₀+L)
+// Posterior mean: (α₀+W) / (α₀+β₀+W+L)
+// 90% credible interval via Beta quantile approximation
+// Ref: Finan PV2020 §5.2 (Bayes' formula, Law of Total Probability)
+
+export interface BayesianResult {
+  priorAlpha: number;
+  priorBeta: number;
+  wins: number;
+  losses: number;
+  posteriorAlpha: number;
+  posteriorBeta: number;
+  posteriorMean: number;          // posterior mean win rate
+  posteriorMode: number;          // MAP estimate
+  ci90Low: number;                // 5th percentile of posterior
+  ci90High: number;               // 95th percentile of posterior
+  priorCurve: { p: number; density: number }[];
+  posteriorCurve: { p: number; density: number }[];
+  // Law of Total Probability decomposition
+  stageDecomposition: { stage: string; stageShare: number; stageWinRate: number; contribution: number }[];
+  totalProbabilityWin: number;    // P(Win) = Σ P(Win|Stage) · P(Stage)
+}
+
+// Beta distribution PDF: f(x; α, β) = x^(α-1)·(1-x)^(β-1) / B(α,β)
+// We use log-gamma for numerical stability
+function logGamma(n: number): number {
+  // Stirling approximation for large n; exact for small integers
+  if (n <= 0) return 0;
+  if (n < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * n)) - logGamma(1 - n);
+  let x = n - 1;
+  const coeffs = [76.18009172947146, -86.50532032941677, 24.01409824083091,
+    -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
+  let ser = 1.000000000190015;
+  for (const c of coeffs) { x++; ser += c / x; }
+  return (n + 0.5) * Math.log(n + 5.5) - (n + 5.5) + Math.log(2.5066282746310005 * ser / n);
+}
+
+function betaPDF(x: number, alpha: number, beta: number): number {
+  if (x <= 0 || x >= 1) return 0;
+  const logB = logGamma(alpha) + logGamma(beta) - logGamma(alpha + beta);
+  return Math.exp((alpha - 1) * Math.log(x) + (beta - 1) * Math.log(1 - x) - logB);
+}
+
+// Approximate Beta quantile using Newton-Raphson on the regularised incomplete beta
+function betaQuantile(p: number, alpha: number, beta: number): number {
+  // Initial guess using normal approximation
+  let x = alpha / (alpha + beta);
+  for (let iter = 0; iter < 50; iter++) {
+    const fx = regularisedIncompleteBeta(x, alpha, beta) - p;
+    const dfx = betaPDF(x, alpha, beta);
+    if (Math.abs(dfx) < 1e-12) break;
+    const dx = fx / dfx;
+    x = Math.max(1e-6, Math.min(1 - 1e-6, x - dx));
+    if (Math.abs(dx) < 1e-8) break;
+  }
+  return x;
+}
+
+// Regularised incomplete beta I_x(a,b) via continued fraction (Lentz method)
+function regularisedIncompleteBeta(x: number, a: number, b: number): number {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  // Use symmetry relation for better convergence
+  if (x > (a + 1) / (a + b + 2)) return 1 - regularisedIncompleteBeta(1 - x, b, a);
+  const logBeta = logGamma(a) + logGamma(b) - logGamma(a + b);
+  const front = Math.exp(a * Math.log(x) + b * Math.log(1 - x) - logBeta) / a;
+  // Lentz continued fraction
+  let f = 1, C = 1, D = 1 - (a + b) * x / (a + 1);
+  if (Math.abs(D) < 1e-30) D = 1e-30;
+  D = 1 / D; f = D;
+  for (let m = 1; m <= 200; m++) {
+    let d = m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m));
+    D = 1 + d * D; if (Math.abs(D) < 1e-30) D = 1e-30; D = 1 / D;
+    C = 1 + d / C; if (Math.abs(C) < 1e-30) C = 1e-30;
+    f *= C * D;
+    d = -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1));
+    D = 1 + d * D; if (Math.abs(D) < 1e-30) D = 1e-30; D = 1 / D;
+    C = 1 + d / C; if (Math.abs(C) < 1e-30) C = 1e-30;
+    const delta = C * D; f *= delta;
+    if (Math.abs(delta - 1) < 1e-10) break;
+  }
+  return front * f;
+}
+
+export function bayesianWinRate(
+  wins: number,
+  losses: number,
+  priorAlpha = 1,
+  priorBeta = 1,
+  stageData?: { stage: string; stageShare: number; stageWinRate: number }[]
+): BayesianResult {
+  const W = Math.max(0, Math.round(wins));
+  const L = Math.max(0, Math.round(losses));
+  const a0 = Math.max(0.1, priorAlpha);
+  const b0 = Math.max(0.1, priorBeta);
+
+  const postAlpha = a0 + W;
+  const postBeta = b0 + L;
+  const posteriorMean = postAlpha / (postAlpha + postBeta);
+  const posteriorMode = postAlpha > 1 && postBeta > 1
+    ? (postAlpha - 1) / (postAlpha + postBeta - 2)
+    : (postAlpha >= postBeta ? 1 : 0);
+
+  // 90% credible interval
+  const ci90Low = betaQuantile(0.05, postAlpha, postBeta);
+  const ci90High = betaQuantile(0.95, postAlpha, postBeta);
+
+  // Build prior and posterior density curves (101 points from 0.00 to 1.00)
+  const points = Array.from({ length: 101 }, (_, i) => i / 100);
+  const priorCurve = points.map(p => ({ p, density: Math.round(betaPDF(p, a0, b0) * 1000) / 1000 }));
+  const posteriorCurve = points.map(p => ({ p, density: Math.round(betaPDF(p, postAlpha, postBeta) * 1000) / 1000 }));
+
+  // Law of Total Probability decomposition
+  const defaultStages = [
+    { stage: 'Lead', stageShare: 0.30, stageWinRate: 0.10 },
+    { stage: 'Qualified', stageShare: 0.25, stageWinRate: 0.25 },
+    { stage: 'Proposal', stageShare: 0.25, stageWinRate: 0.45 },
+    { stage: 'Negotiation', stageShare: 0.20, stageWinRate: 0.70 },
+  ];
+  const stages = stageData && stageData.length > 0 ? stageData : defaultStages;
+  const stageDecomposition = stages.map(s => ({
+    stage: s.stage,
+    stageShare: s.stageShare,
+    stageWinRate: s.stageWinRate,
+    contribution: Math.round(s.stageShare * s.stageWinRate * 1000) / 1000,
+  }));
+  const totalProbabilityWin = Math.round(stageDecomposition.reduce((s, d) => s + d.contribution, 0) * 1000) / 1000;
+
+  return {
+    priorAlpha: a0,
+    priorBeta: b0,
+    wins: W,
+    losses: L,
+    posteriorAlpha: postAlpha,
+    posteriorBeta: postBeta,
+    posteriorMean: Math.round(posteriorMean * 1000) / 1000,
+    posteriorMode: Math.round(posteriorMode * 1000) / 1000,
+    ci90Low: Math.round(ci90Low * 1000) / 1000,
+    ci90High: Math.round(ci90High * 1000) / 1000,
+    priorCurve,
+    posteriorCurve,
+    stageDecomposition,
+    totalProbabilityWin,
+  };
+}
+
+// ─── Extended WhatIfParams ────────────────────────────────────────────────────
+// Extend the existing WhatIfParams interface with actuarial model parameters
+
+export interface ActuarialWhatIfParams {
+  // Poisson
+  poissonLambda: number;         // override arrival rate (deals/month)
+  // Geometric / Negative Binomial
+  closeRatePerPeriod: number;    // p — per-period close probability (0.01–0.99)
+  quotaTarget: number;           // r — target number of closes for NB model
+  // Bayesian
+  bayesPriorAlpha: number;       // α₀ — prior successes (belief strength)
+  bayesPriorBeta: number;        // β₀ — prior failures (belief strength)
+}
+
+export const DEFAULT_ACTUARIAL_PARAMS: ActuarialWhatIfParams = {
+  poissonLambda: 5,
+  closeRatePerPeriod: 0.20,
+  quotaTarget: 3,
+  bayesPriorAlpha: 1,
+  bayesPriorBeta: 1,
+};

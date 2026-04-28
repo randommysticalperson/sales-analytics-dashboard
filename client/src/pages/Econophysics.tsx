@@ -26,14 +26,20 @@ import {
   monteCarloForecast as computeMonteCarlo,
   binomialPipelineValue as computeBinomial,
   economicTemperatureTrend as computeTempTrend,
+  poissonDealArrival as computePoisson,
+  geometricSalesCycle as computeGeometric,
+  bayesianWinRate as computeBayes,
   WhatIfParams,
+  ActuarialWhatIfParams,
   DEFAULT_STAGE_PROBS,
+  DEFAULT_ACTUARIAL_PARAMS,
 } from "@/lib/econophysicsEngine";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const PDF_URLS = {
+const PDF_URLS: Record<string, string> = {
   classicalEconophysics: "/manus-storage/classical_econophysics_36239cd1.pdf",
   mathematicalFinance: "/manus-storage/mathematical_finance_wallace_durham_3170cced.pdf",
+  finanPV2020: "/manus-storage/finan_probability_actuaries_pv2020_536ebf15.pdf",
 };
 const STAGE_ORDER = ["lead", "qualified", "proposal", "negotiation", "closed_won", "closed_lost"];
 const fmt = (n: number) =>
@@ -103,7 +109,7 @@ function DeltaBadge({ current, baseline, isPercent = false }: { current: number;
 }
 
 // ─── Methodology Modal ────────────────────────────────────────────────────────
-const METHODOLOGY_MODELS = [
+const METHODOLOGY_MODELS: { name: string; formula: string; source: string; pdf: string; assumptions: string[]; limitations: string[] }[] = [
   {
     name: "Boltzmann-Gibbs Distribution", formula: "P(m) = (1/T) · exp(−m/T)",
     source: "Classical Econophysics Ch. 8", pdf: "classicalEconophysics" as const,
@@ -148,9 +154,27 @@ const METHODOLOGY_MODELS = [
   },
   {
     name: "Binomial Pipeline Expected Value", formula: "E[R] = Σ vᵢ · p(stageᵢ)",
-    source: "Mathematical Finance Ch. 2–3", pdf: "mathematicalFinance" as const,
+    source: "Mathematical Finance Ch. 2–3", pdf: "mathematicalFinance",
     assumptions: ["Each deal is an independent Bernoulli trial — win or lose.", "Stage win probabilities are constant across all deals in the same stage.", "Deal values are fixed — no upsell or downsell modelled."],
     limitations: ["Default stage probabilities (10%, 25%, 45%, 70%) are industry benchmarks, not your actuals.", "Ignores deal age, rep quality, and competitive dynamics.", "Independence assumption breaks down when deals share the same account or rep."],
+  },
+  {
+    name: "Poisson Deal-Arrival Model", formula: "P(X=k) = e^(−λ)·λᵏ/k!",
+    source: "Finan PV2020 §7.4", pdf: "finanPV2020",
+    assumptions: ["Deals arrive independently of each other.", "The arrival rate λ (deals/month) is constant over the observation window.", "E(X) = Var(X) = λ — mean and variance are equal for a Poisson process."],
+    limitations: ["Assumes stationarity — seasonal spikes or ramp-up periods violate the constant-λ assumption.", "With fewer than 6 months of data, the λ estimate is unreliable.", "Does not model deal value — only arrival count."],
+  },
+  {
+    name: "Geometric / Negative-Binomial Sales Cycle", formula: "P(X=n) = p·(1−p)^(n−1)",
+    source: "Finan PV2020 §7.6–7.7", pdf: "finanPV2020",
+    assumptions: ["Each period is an independent Bernoulli trial with constant close probability p.", "E(X) = 1/p — expected number of periods to first close.", "Negative-Binomial extension: time to r-th close follows NB(r, p)."],
+    limitations: ["Constant p assumption ignores deal-specific factors (rep skill, account size, competition).", "Geometric distribution has memoryless property — past failures do not change future probability.", "p is estimated from aggregate win rate, not per-deal or per-rep rates."],
+  },
+  {
+    name: "Bayesian Win-Rate Updater", formula: "Posterior ∝ Beta(α₀+W, β₀+L)",
+    source: "Finan PV2020 §5.2", pdf: "finanPV2020",
+    assumptions: ["Prior belief is modelled as Beta(α₀, β₀) — conjugate prior for Bernoulli likelihood.", "Each deal outcome is an independent Bernoulli trial.", "Law of Total Probability: P(Win) = Σ P(Win|Stage)·P(Stage)."],
+    limitations: ["Prior parameters α₀ and β₀ are subjective — the default Uniform(1,1) is non-informative.", "Assumes deal outcomes are exchangeable — ignores rep, product, and account heterogeneity.", "The Beta distribution is a continuous approximation to a discrete win-rate."],
   },
 ];
 
@@ -161,7 +185,7 @@ function MethodologyModal({ open, onClose }: { open: boolean; onClose: () => voi
         <DialogHeader className="px-6 pt-5 pb-3 shrink-0">
           <DialogTitle className="text-base font-semibold">Model Methodology</DialogTitle>
           <DialogDescription className="text-xs text-muted-foreground">
-            Assumptions and limitations for all 8 econophysics models used on this page.
+            Assumptions and limitations for all 11 models used on this page.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-wrap gap-3 px-6 pb-3 border-b border-border shrink-0">
@@ -172,6 +196,10 @@ function MethodologyModal({ open, onClose }: { open: boolean; onClose: () => voi
           <a href={PDF_URLS.mathematicalFinance} target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 transition-colors">
             <ExternalLink className="w-3.5 h-3.5" />Mathematical Finance — Clare Wallace, Durham University
+          </a>
+          <a href={PDF_URLS.finanPV2020} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 transition-colors">
+            <ExternalLink className="w-3.5 h-3.5" />A Probability Course for the Actuaries — Marcel B. Finan (PV2020)
           </a>
         </div>
         <ScrollArea className="flex-1 px-6 py-4">
@@ -385,6 +413,7 @@ export default function Econophysics() {
   }, [data, stageProbData]);
 
   const [whatIfParams, setWhatIfParams] = useState<WhatIfParams | null>(null);
+  const [actuarialParams, setActuarialParams] = useState<ActuarialWhatIfParams>(DEFAULT_ACTUARIAL_PARAMS);
   const activeParams = whatIfParams ?? baselineParams;
   const isWhatIfMode = whatIfParams !== null;
 
@@ -401,6 +430,25 @@ export default function Econophysics() {
   const serverRepRevenues: any[] = (data as any)?.repRevenues ?? [];
   const serverMonthlySeries: any[] = (data as any)?.monthlySeries ?? [];
   const serverAllDeals: any[] = (data as any)?.allDeals ?? [];
+  const serverPoissonArrival = (data as any)?.poissonArrival;
+  const serverGeometricCycle = (data as any)?.geometricCycle;
+  const serverBayesianWinRate = (data as any)?.bayesianWinRate;
+
+  // ── Actuarial model computations ────────────────────────────────────────────
+  const wiPoisson = useMemo(() =>
+    computePoisson(serverMonthlySeries.map((m: any) => m.dealCount ?? 0), actuarialParams.poissonLambda),
+    [serverMonthlySeries, actuarialParams.poissonLambda]
+  );
+  const wiGeometric = useMemo(() => {
+    const wins = serverBayesianWinRate?.wins ?? 0;
+    const totalPeriods = Math.max(1, serverMonthlySeries.length);
+    return computeGeometric(wins, totalPeriods, actuarialParams.quotaTarget, actuarialParams.closeRatePerPeriod);
+  }, [serverBayesianWinRate, serverMonthlySeries, actuarialParams.quotaTarget, actuarialParams.closeRatePerPeriod]);
+  const wiBayes = useMemo(() => {
+    const wins = serverBayesianWinRate?.wins ?? 0;
+    const losses = serverBayesianWinRate?.losses ?? 0;
+    return computeBayes(wins, losses, actuarialParams.bayesPriorAlpha, actuarialParams.bayesPriorBeta);
+  }, [serverBayesianWinRate, actuarialParams.bayesPriorAlpha, actuarialParams.bayesPriorBeta]);
 
   const syntheticDealValues = useMemo(() => {
     if (!isWhatIfMode) return null;
@@ -476,7 +524,12 @@ export default function Econophysics() {
   }
   if (!data) return null;
 
-  const { boltzmannGibbs: serverBG, gini: serverGini, entropy: serverEntropy, gbmParams, forecast: serverForecast, pipelineValue: serverPipeline, temperatureTrend, repRevenues, monthlySeries, allDeals } = data as any;
+  const { boltzmannGibbs: serverBG, gini: serverGini, entropy: serverEntropy, gbmParams, forecast: serverForecast, pipelineValue: serverPipeline, temperatureTrend, repRevenues, monthlySeries } = data as any;
+
+  // Actuarial display data
+  const displayPoisson = wiPoisson;
+  const displayGeometric = wiGeometric;
+  const displayBayes = wiBayes;
 
   // ── Data quality checks ──────────────────────────────────────────────────
   const dealCount = serverBG.histogram.reduce((s: number, b: any) => s + b.count, 0);
@@ -808,6 +861,155 @@ export default function Econophysics() {
             </div>
           </div>
 
+          {/* ── Section 6: Poisson Deal-Arrival Model ── */}
+          <div>
+            <SectionHeader
+              title="Poisson Deal-Arrival Model"
+              source="Finan PV2020 §7.4 — Poisson distribution"
+              description={`P(X=k) = e^(−λ)·λᵏ/k! where λ = ${displayPoisson.lambda} deals/month. Mode = ${displayPoisson.mode} deals. 90% CI: [${displayPoisson.ci90Low}, ${displayPoisson.ci90High}]. E(X) = Var(X) = λ.`}
+            />
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <div className="lg:col-span-2">
+                <Card>
+                  <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Probability Mass Function P(X = k)</CardTitle></CardHeader>
+                  <CardContent className="pt-0 pb-3">
+                    <ResponsiveContainer width="100%" height={240}>
+                      <BarChart
+                        data={displayPoisson.pmf.filter((e: any) => e.probability > 0.001).slice(0, 25)}
+                        margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                        <XAxis dataKey="k" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} label={{ value: "Deals per month (k)", position: "insideBottom", offset: -3, fontSize: 11 }} />
+                        <YAxis tickFormatter={(v: number) => v.toFixed(2)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                        <Tooltip content={<ChartTooltip />} />
+                        <Bar dataKey="probability" name="P(X=k)" fill="#8b5cf6" radius={[3, 3, 0, 0]} />
+                        <ReferenceLine x={displayPoisson.mode} stroke="#f59e0b" strokeDasharray="4 2" label={{ value: "Mode", fontSize: 10, fill: "#f59e0b" }} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+              </div>
+              <div className="space-y-3">
+                <MetricCard title="Arrival Rate λ" value={`${displayPoisson.lambda} deals/mo`} sub="E(X) = Var(X) = λ" icon={Activity} accent tooltip="Poisson rate parameter — estimated as mean of monthly deal counts." />
+                <MetricCard title="Most Likely Count" value={`${displayPoisson.mode} deals`} sub="Mode = ⌊λ⌋ for λ > 1" icon={Target} tooltip="The most probable number of deals in any given month." />
+                <MetricCard title="90% Confidence Interval" value={`[${displayPoisson.ci90Low}, ${displayPoisson.ci90High}]`} sub="5th–95th percentile range" icon={BarChart2} tooltip="90% of months should fall within this deal-count range." />
+              </div>
+            </div>
+          </div>
+
+          {/* ── Section 7: Geometric / Negative-Binomial Sales Cycle ── */}
+          <div>
+            <SectionHeader
+              title="Geometric & Negative-Binomial Sales Cycle"
+              source="Finan PV2020 §7.6–7.7 — Geometric and Negative-Binomial distributions"
+              description={`P(X=n) = p·(1−p)^(n−1) where p = ${(displayGeometric.closeRatePerPeriod * 100).toFixed(1)}%/month. E(X) = ${displayGeometric.expectedCycleMonths} months to first close. Time to ${displayGeometric.quotaTarget} closes: E(Y) = ${displayGeometric.expectedMonthsToQuota} months.`}
+            />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Geometric PMF — Months to First Close</CardTitle></CardHeader>
+                <CardContent className="pt-0 pb-3">
+                  <ResponsiveContainer width="100%" height={240}>
+                    <BarChart
+                      data={displayGeometric.pmf.filter((e: any) => e.probability > 0.001).slice(0, 20)}
+                      margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="n" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} label={{ value: "Months (n)", position: "insideBottom", offset: -3, fontSize: 11 }} />
+                      <YAxis tickFormatter={(v: number) => v.toFixed(2)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                      <Tooltip content={<ChartTooltip />} />
+                      <Bar dataKey="probability" name="P(X=n)" fill="#10b981" radius={[3, 3, 0, 0]} />
+                      <Line dataKey="cumulative" name="Cumulative" stroke="#f59e0b" strokeWidth={2} dot={false} type="monotone" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Negative-Binomial PMF — Months to {displayGeometric.quotaTarget} Closes</CardTitle></CardHeader>
+                <CardContent className="pt-0 pb-3">
+                  <ResponsiveContainer width="100%" height={240}>
+                    <BarChart
+                      data={displayGeometric.nbPmf.filter((e: any) => e.probability > 0.001).slice(0, 25)}
+                      margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="n" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} label={{ value: "Months (n)", position: "insideBottom", offset: -3, fontSize: 11 }} />
+                      <YAxis tickFormatter={(v: number) => v.toFixed(3)} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                      <Tooltip content={<ChartTooltip />} />
+                      <Bar dataKey="probability" name={`P(Y=n | r=${displayGeometric.quotaTarget})`} fill="#06b6d4" radius={[3, 3, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+              <MetricCard title="Close Rate p" value={`${(displayGeometric.closeRatePerPeriod * 100).toFixed(1)}%/mo`} sub="Bernoulli probability per period" icon={Target} accent />
+              <MetricCard title="Expected Cycle" value={`${displayGeometric.expectedCycleMonths} mo`} sub="E(X) = 1/p — months to first close" icon={Activity} />
+              <MetricCard title="Variance" value={displayGeometric.varianceCycles.toFixed(2)} sub="Var(X) = (1−p)/p²" icon={Sigma} />
+              <MetricCard title={`Time to ${displayGeometric.quotaTarget} Closes`} value={`${displayGeometric.expectedMonthsToQuota} mo`} sub={`E(Y) = r/p where r = ${displayGeometric.quotaTarget}`} icon={TrendingUp} accent />
+            </div>
+          </div>
+
+          {/* ── Section 8: Bayesian Win-Rate Updater ── */}
+          <div>
+            <SectionHeader
+              title="Bayesian Win-Rate Updater"
+              source="Finan PV2020 §5.2 — Bayes' formula & Law of Total Probability"
+              description={`Prior: Beta(${displayBayes.priorAlpha}, ${displayBayes.priorBeta}). Posterior: Beta(${displayBayes.posteriorAlpha.toFixed(1)}, ${displayBayes.posteriorBeta.toFixed(1)}) after ${displayBayes.wins} wins and ${displayBayes.losses} losses. Posterior mean win rate: ${(displayBayes.posteriorMean * 100).toFixed(1)}%.`}
+            />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Prior vs Posterior Beta Distribution</CardTitle></CardHeader>
+                <CardContent className="pt-0 pb-3">
+                  <ResponsiveContainer width="100%" height={240}>
+                    <ComposedChart
+                      data={displayBayes.posteriorCurve.map((pt: any, i: number) => ({
+                        p: pt.p,
+                        prior: displayBayes.priorCurve[i]?.density ?? 0,
+                        posterior: pt.density,
+                      }))}
+                      margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="p" tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} label={{ value: "Win rate p", position: "insideBottom", offset: -3, fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                      <Tooltip content={<ChartTooltip />} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Area dataKey="prior" name="Prior Beta(α₀,β₀)" stroke="#94a3b8" fill="#94a3b8" fillOpacity={0.2} strokeWidth={1.5} dot={false} type="monotone" />
+                      <Area dataKey="posterior" name="Posterior Beta(α,β)" stroke="#6366f1" fill="#6366f1" fillOpacity={0.25} strokeWidth={2} dot={false} type="monotone" />
+                      <ReferenceLine x={displayBayes.posteriorMean} stroke="#f59e0b" strokeDasharray="4 2" label={{ value: "Mean", fontSize: 10, fill: "#f59e0b" }} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm font-medium">Law of Total Probability — Stage Decomposition</CardTitle></CardHeader>
+                <CardContent className="pt-0 pb-3">
+                  <ResponsiveContainer width="100%" height={240}>
+                    <BarChart
+                      data={displayBayes.stageDecomposition}
+                      margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <XAxis dataKey="stage" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} />
+                      <YAxis tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+                      <Tooltip formatter={(v: any) => [`${(Number(v) * 100).toFixed(1)}%`]} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Bar dataKey="stageShare" name="P(Stage)" fill="#94a3b8" radius={[3, 3, 0, 0]} />
+                      <Bar dataKey="stageWinRate" name="P(Win|Stage)" fill="#6366f1" radius={[3, 3, 0, 0]} />
+                      <Bar dataKey="contribution" name="P(Win∩Stage)" fill="#f59e0b" radius={[3, 3, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </CardContent>
+              </Card>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+              <MetricCard title="Posterior Mean" value={`${(displayBayes.posteriorMean * 100).toFixed(1)}%`} sub={`Beta(${displayBayes.posteriorAlpha.toFixed(1)}, ${displayBayes.posteriorBeta.toFixed(1)}) mean`} icon={Target} accent tooltip="E[p | data] = (α₀+W)/(α₀+β₀+W+L)" />
+              <MetricCard title="MAP Estimate" value={`${(displayBayes.posteriorMode * 100).toFixed(1)}%`} sub="Maximum a posteriori win rate" icon={Activity} tooltip="Mode of posterior Beta distribution." />
+              <MetricCard title="90% Credible Interval" value={`${(displayBayes.ci90Low * 100).toFixed(1)}%–${(displayBayes.ci90High * 100).toFixed(1)}%`} sub="5th–95th percentile of posterior" icon={BarChart2} tooltip="There is 90% posterior probability that the true win rate lies in this interval." />
+              <MetricCard title="P(Win) — Total Probability" value={`${(displayBayes.totalProbabilityWin * 100).toFixed(1)}%`} sub="P(Win) = Σ P(Win|Stage)·P(Stage)" icon={Sigma} accent tooltip="Law of Total Probability decomposition across pipeline stages." />
+            </div>
+          </div>
+
           {/* ── Model Reference Table ── */}
           <Card>
             <CardHeader className="pb-3">
@@ -833,7 +1035,10 @@ export default function Econophysics() {
                       { name: "GBM (volatility)", formula: "σ = std(log-returns)·√12", value: `σ = ${(activeParams.sigmaAnnual * 100).toFixed(2)}%/yr`, src: "Mathematical Finance Ch. 6", pdf: "mathematicalFinance" as const },
                       { name: "Monte Carlo (GBM)", formula: "Sₜ = S₀·exp((μ−σ²/2)t + σWₜ)", value: `E[S_${activeParams.horizonMonths}] = ${fmt(displayForecast.expectedFinal)}`, src: "Mathematical Finance Ch. 6", pdf: "mathematicalFinance" as const },
                       { name: "Binomial Pipeline", formula: "E[R] = Σ vᵢ·p(stageᵢ)", value: `E[R] = ${fmt(displayPipeline.totalExpected)}`, src: "Mathematical Finance Ch. 2–3", pdf: "mathematicalFinance" as const },
-                      { name: "Pareto Tail", formula: "P(m) ~ m^(−α) for m > m₀", value: `Top ${pct(displayBG.paretoFraction)} → ${pct(displayBG.paretoRevenueShare)} of revenue`, src: "Classical Econophysics Ch. 8", pdf: "classicalEconophysics" as const },
+                      { name: "Pareto Tail", formula: "P(m) ~ m^(−α) for m > m₀", value: `Top ${pct(displayBG.paretoFraction)} → ${pct(displayBG.paretoRevenueShare)} of revenue`, src: "Classical Econophysics Ch. 8", pdf: "classicalEconophysics" },
+                      { name: "Poisson Arrival", formula: "P(X=k) = e^(−λ)·λᵏ/k!", value: `λ = ${displayPoisson.lambda}, mode = ${displayPoisson.mode}, CI₉₀ = [${displayPoisson.ci90Low}, ${displayPoisson.ci90High}]`, src: "Finan PV2020 §7.4", pdf: "finanPV2020" },
+                      { name: "Geometric Cycle", formula: "P(X=n) = p·(1−p)^(n−1)", value: `p = ${(displayGeometric.closeRatePerPeriod * 100).toFixed(1)}%, E(X) = ${displayGeometric.expectedCycleMonths} mo`, src: "Finan PV2020 §7.6–7.7", pdf: "finanPV2020" },
+                      { name: "Bayesian Win Rate", formula: "Posterior ∝ Beta(α₀+W, β₀+L)", value: `E[p|data] = ${(displayBayes.posteriorMean * 100).toFixed(1)}%, CI₉₀ = [${(displayBayes.ci90Low * 100).toFixed(1)}%, ${(displayBayes.ci90High * 100).toFixed(1)}%]`, src: "Finan PV2020 §5.2", pdf: "finanPV2020" },
                     ].map(row => (
                       <tr key={row.name}>
                         <td className="py-2 pr-4 font-medium">{row.name}</td>
@@ -877,6 +1082,8 @@ export default function Econophysics() {
               onParamsChange={handleParamsChange}
               onReset={handleReset}
               isWhatIfMode={isWhatIfMode}
+              actuarialParams={actuarialParams}
+              onActuarialParamsChange={setActuarialParams}
             />
           </div>
         </div>

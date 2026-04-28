@@ -107,3 +107,13 @@
 - [x] Scenario presets: "Optimistic", "Pessimistic", "Conservative" preset buttons
 - [x] What-If mode indicator: clear visual signal when the page is showing what-if vs. live data
 - [x] Vitest tests for the client-side computation engine
+
+## Actuarial Probability Models (Finan PV2020)
+
+- [x] Commit finan_probability_actuaries_pv2020.pdf to docs/
+- [x] Add Poisson Deal-Arrival model (engine + chart + KPI card)
+- [x] Add Geometric/Negative-Binomial Sales Cycle model (engine + chart + KPI card)
+- [x] Add Bayesian Win-Rate Updater model (engine + chart + KPI card)
+- [x] Extend WhatIfPanel with sliders for three new actuarial models
+- [x] Add three new models to methodology modal PDF links section
+- [x] Write Vitest tests for three new actuarial model functions

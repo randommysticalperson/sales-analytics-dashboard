@@ -30,6 +30,8 @@ import {
   getMonthlyRevenueSeries,
   getStageProbabilities,
   updateStageProbability,
+  getMonthlyDealCounts,
+  getWinsLossesCount,
 } from "./db";
 import {
   boltzmannGibbs,
@@ -39,6 +41,9 @@ import {
   monteCarloForecast,
   binomialPipelineValue,
   economicTemperatureTrend,
+  poissonDealArrival,
+  geometricSalesCycle,
+  bayesianWinRate,
 } from "./econophysics";
 
 export const appRouter = router({
@@ -303,11 +308,13 @@ export const appRouter = router({
   // ─── Econophysics Analytics ───────────────────────────────────────────────
   econophysics: router({
     full: protectedProcedure.query(async () => {
-      const [closedWonValues, allDeals, repRevenues, monthlySeries] = await Promise.all([
+      const [closedWonValues, allDeals, repRevenues, monthlySeries, monthlyDealCounts, winsLosses] = await Promise.all([
         getClosedWonDealValues(),
         getAllDealValues(),
         getRepRevenueForEntropy(),
         getMonthlyRevenueSeries(),
+        getMonthlyDealCounts(),
+        getWinsLossesCount(),
       ]);
 
       const bg = boltzmannGibbs(closedWonValues);
@@ -321,6 +328,25 @@ export const appRouter = router({
       const stageProbMap = await getStageProbabilities();
       const pipelineValue = binomialPipelineValue(allDeals, stageProbMap);
       const tempTrend = economicTemperatureTrend(monthlySeries);
+
+      // Actuarial models (Finan PV2020)
+      const poissonData = poissonDealArrival(monthlyDealCounts);
+      const geoData = geometricSalesCycle(winsLosses.wins, Math.max(1, winsLosses.totalPeriods));
+      // Build stage decomposition from pipeline distribution for Bayes
+      const totalDeals = allDeals.length || 1;
+      const stageShareMap: Record<string, number> = {};
+      for (const d of allDeals) {
+        const s = d.stage.toLowerCase().replace(/ /g, '_');
+        stageShareMap[s] = (stageShareMap[s] ?? 0) + 1;
+      }
+      const stageDecomp = Object.entries(stageShareMap)
+        .filter(([s]) => !['closed_won', 'closed_lost'].includes(s))
+        .map(([stage, count]) => ({
+          stage: stage.charAt(0).toUpperCase() + stage.slice(1).replace('_', ' '),
+          stageShare: count / totalDeals,
+          stageWinRate: stageProbMap[stage] ?? 0.1,
+        }));
+      const bayesData = bayesianWinRate(winsLosses.wins, winsLosses.losses, 1, 1, stageDecomp);
 
       return {
         boltzmannGibbs: bg,
@@ -340,6 +366,10 @@ export const appRouter = router({
         temperatureTrend: tempTrend,
         repRevenues,
         monthlySeries,
+        // Actuarial models
+        poissonArrival: poissonData,
+        geometricCycle: geoData,
+        bayesianWinRate: bayesData,
       };
     }),
   }),

@@ -20,8 +20,10 @@ import {
 import { RotateCcw, Zap, TrendingDown, Shield } from "lucide-react";
 import {
   WhatIfParams,
+  ActuarialWhatIfParams,
   SCENARIO_PRESETS,
   DEFAULT_STAGE_PROBS,
+  DEFAULT_ACTUARIAL_PARAMS,
 } from "@/lib/econophysicsEngine";
 
 interface WhatIfPanelProps {
@@ -30,6 +32,9 @@ interface WhatIfPanelProps {
   onParamsChange: (p: WhatIfParams) => void;
   onReset: () => void;
   isWhatIfMode: boolean;
+  // Actuarial model parameters (separate from GBM/pipeline what-if)
+  actuarialParams?: ActuarialWhatIfParams;
+  onActuarialParamsChange?: (p: ActuarialWhatIfParams) => void;
 }
 
 const STAGE_LABELS: Record<string, string> = {
@@ -68,7 +73,12 @@ export function WhatIfPanel({
   onParamsChange,
   onReset,
   isWhatIfMode,
+  actuarialParams = DEFAULT_ACTUARIAL_PARAMS,
+  onActuarialParamsChange,
 }: WhatIfPanelProps) {
+  function setActuarial<K extends keyof ActuarialWhatIfParams>(key: K, value: ActuarialWhatIfParams[K]) {
+    onActuarialParamsChange?.({ ...actuarialParams, [key]: value });
+  }
   function set<K extends keyof WhatIfParams>(key: K, value: WhatIfParams[K]) {
     onParamsChange({ ...params, [key]: value });
   }
@@ -361,6 +371,129 @@ export function WhatIfPanel({
               onChange={e => set("dealCount", Number(e.target.value) || baseline.dealCount)}
               className="h-7 text-xs"
             />
+          </div>
+        </div>
+      </div>
+
+      <Separator />
+
+      {/* ── Actuarial Parameters (Finan PV2020) ── */}
+      <div>
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1">
+          Actuarial Parameters
+        </p>
+        <p className="text-[10px] text-muted-foreground mb-3 leading-relaxed">
+          Poisson, Geometric/NB, and Bayesian models (Finan PV2020)
+        </p>
+        <div className="space-y-4">
+          {/* Poisson λ */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <Label className="text-xs">Poisson Rate λ (deals/mo)</Label>
+              <span className="text-xs font-mono font-semibold text-violet-600 dark:text-violet-400 tabular-nums">
+                {actuarialParams.poissonLambda.toFixed(1)}
+              </span>
+            </div>
+            <Slider
+              min={1}
+              max={30}
+              step={0.5}
+              value={[actuarialParams.poissonLambda]}
+              onValueChange={([v]) => setActuarial("poissonLambda", v)}
+              className="w-full"
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+              <span>1</span>
+              <span>30 deals/mo</span>
+            </div>
+          </div>
+
+          {/* Close rate p */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <Label className="text-xs">Close Rate p (%/month)</Label>
+              <span className="text-xs font-mono font-semibold text-violet-600 dark:text-violet-400 tabular-nums">
+                {(actuarialParams.closeRatePerPeriod * 100).toFixed(0)}%
+              </span>
+            </div>
+            <Slider
+              min={1}
+              max={99}
+              step={1}
+              value={[Math.round(actuarialParams.closeRatePerPeriod * 100)]}
+              onValueChange={([v]) => setActuarial("closeRatePerPeriod", v / 100)}
+              className="w-full"
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+              <span>1%</span>
+              <span>99%</span>
+            </div>
+          </div>
+
+          {/* Quota target r */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <Label className="text-xs">Quota Target r (closes)</Label>
+              <span className="text-xs font-mono font-semibold text-violet-600 dark:text-violet-400 tabular-nums">
+                {actuarialParams.quotaTarget}
+              </span>
+            </div>
+            <Slider
+              min={1}
+              max={20}
+              step={1}
+              value={[actuarialParams.quotaTarget]}
+              onValueChange={([v]) => setActuarial("quotaTarget", v)}
+              className="w-full"
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+              <span>1</span>
+              <span>20 closes</span>
+            </div>
+          </div>
+
+          {/* Bayesian prior α₀ */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <Label className="text-xs">Bayesian Prior α₀ (belief wins)</Label>
+              <span className="text-xs font-mono font-semibold text-violet-600 dark:text-violet-400 tabular-nums">
+                {actuarialParams.bayesPriorAlpha.toFixed(1)}
+              </span>
+            </div>
+            <Slider
+              min={1}
+              max={20}
+              step={0.5}
+              value={[actuarialParams.bayesPriorAlpha]}
+              onValueChange={([v]) => setActuarial("bayesPriorAlpha", v)}
+              className="w-full"
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+              <span>1 (flat)</span>
+              <span>20 (strong)</span>
+            </div>
+          </div>
+
+          {/* Bayesian prior β₀ */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <Label className="text-xs">Bayesian Prior β₀ (belief losses)</Label>
+              <span className="text-xs font-mono font-semibold text-violet-600 dark:text-violet-400 tabular-nums">
+                {actuarialParams.bayesPriorBeta.toFixed(1)}
+              </span>
+            </div>
+            <Slider
+              min={1}
+              max={20}
+              step={0.5}
+              value={[actuarialParams.bayesPriorBeta]}
+              onValueChange={([v]) => setActuarial("bayesPriorBeta", v)}
+              className="w-full"
+            />
+            <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+              <span>1 (flat)</span>
+              <span>20 (strong)</span>
+            </div>
           </div>
         </div>
       </div>
