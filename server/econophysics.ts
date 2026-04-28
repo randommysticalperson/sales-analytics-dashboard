@@ -607,3 +607,144 @@ export function bayesianWinRate(
     priorCurve, posteriorCurve, stageDecomposition, totalProbabilityWin,
   };
 }
+
+// ─── 12. Per-Rep Poisson λ Breakdown ─────────────────────────────────────────
+// Each rep is modelled as an independent Poisson process with rate λ_i.
+// λ_i = mean monthly closed-won deals for rep i.
+// Ref: Finan PV2020 §7.4
+
+export function perRepPoisson(repData: { repName: string; monthlyCounts: number[]; lambda: number }[]): {
+  reps: {
+    repName: string;
+    lambda: number;
+    mode: number;
+    ci90Low: number;
+    ci90High: number;
+    variance: number;
+    share: number;        // fraction of total λ
+  }[];
+  totalLambda: number;
+  topRep: string;
+  bottomRep: string;
+  lambdaCV: number;      // coefficient of variation across reps
+} {
+  if (repData.length === 0) {
+    return { reps: [], totalLambda: 0, topRep: "", bottomRep: "", lambdaCV: 0 };
+  }
+
+  const totalLambda = repData.reduce((s, r) => s + r.lambda, 0);
+
+  function logFactorial(n: number): number {
+    if (n <= 1) return 0;
+    let s = 0;
+    for (let i = 2; i <= n; i++) s += Math.log(i);
+    return s;
+  }
+
+  const reps = repData.map(r => {
+    const lam = Math.max(0.01, r.lambda);
+    const kMax = Math.max(20, Math.ceil(lam * 4));
+    let modeK = 0, modeProb = 0;
+    let cumulative = 0;
+    let ci90Low = 0, ci90High = kMax;
+    for (let k = 0; k <= kMax; k++) {
+      const logP = k * Math.log(lam) - lam - logFactorial(k);
+      const p = Math.exp(logP);
+      cumulative = Math.min(1, cumulative + p);
+      if (p > modeProb) { modeProb = p; modeK = k; }
+      if (cumulative >= 0.05 && ci90Low === 0) ci90Low = k;
+      if (cumulative >= 0.95 && ci90High === kMax) ci90High = k;
+    }
+    return {
+      repName: r.repName,
+      lambda: Math.round(lam * 100) / 100,
+      mode: modeK,
+      ci90Low,
+      ci90High,
+      variance: Math.round(lam * 100) / 100,
+      share: totalLambda > 0 ? Math.round((lam / totalLambda) * 1000) / 1000 : 0,
+    };
+  });
+
+  const sorted = [...reps].sort((a, b) => b.lambda - a.lambda);
+  const mean = totalLambda / reps.length;
+  const variance = reps.reduce((s, r) => s + (r.lambda - mean) ** 2, 0) / reps.length;
+  const lambdaCV = mean > 0 ? Math.round((Math.sqrt(variance) / mean) * 1000) / 1000 : 0;
+
+  return {
+    reps,
+    totalLambda: Math.round(totalLambda * 100) / 100,
+    topRep: sorted[0]?.repName ?? "",
+    bottomRep: sorted[sorted.length - 1]?.repName ?? "",
+    lambdaCV,
+  };
+}
+
+// ─── 13. Survival / Hazard Function for Deal Age-in-Stage ────────────────────
+// Kaplan-Meier estimator: S(t) = Π_{t_i ≤ t} (1 − d_i / n_i)
+// Hazard rate:            h(t) = d_i / n_i  at each event time t_i
+// Ref: Finan PV2020 §13 (Survival Distribution Function)
+
+export function survivalHazard(dealAges: { stage: string; ageMonths: number; isEvent: boolean }[]): {
+  kmCurve: { t: number; survival: number; hazard: number; atRisk: number; events: number }[];
+  medianSurvival: number;   // months at which S(t) first drops below 0.5
+  meanSurvival: number;
+  atRiskTable: { stage: string; count: number; medianAge: number; pctAtRisk: number }[];
+} {
+  if (dealAges.length === 0) {
+    return { kmCurve: [], medianSurvival: 0, meanSurvival: 0, atRiskTable: [] };
+  }
+
+  // Build KM curve over all deals (closed = event, open = censored)
+  const maxT = Math.max(...dealAges.map(d => d.ageMonths), 1);
+  const events: Map<number, { d: number; n: number }> = new Map();
+
+  // Count events and at-risk at each integer month
+  for (let t = 0; t <= maxT; t++) {
+    const atRisk = dealAges.filter(d => d.ageMonths >= t).length;
+    const died = dealAges.filter(d => d.ageMonths === t && d.isEvent).length;
+    if (atRisk > 0) events.set(t, { d: died, n: atRisk });
+  }
+
+  const kmCurve: { t: number; survival: number; hazard: number; atRisk: number; events: number }[] = [];
+  let S = 1;
+  for (const [t, { d, n }] of Array.from(events.entries()).sort((a, b) => a[0] - b[0])) {
+    const h = n > 0 ? d / n : 0;
+    S = S * (1 - h);
+    kmCurve.push({ t, survival: Math.round(S * 1000) / 1000, hazard: Math.round(h * 1000) / 1000, atRisk: n, events: d });
+  }
+
+  // Median survival: first t where S(t) ≤ 0.5
+  const medianEntry = kmCurve.find(e => e.survival <= 0.5);
+  const medianSurvival = medianEntry?.t ?? maxT;
+
+  // Mean survival (restricted mean): area under KM curve
+  let meanSurvival = 0;
+  for (let i = 1; i < kmCurve.length; i++) {
+    const dt = kmCurve[i].t - kmCurve[i - 1].t;
+    meanSurvival += kmCurve[i - 1].survival * dt;
+  }
+  meanSurvival = Math.round(meanSurvival * 10) / 10;
+
+  // At-risk table by stage
+  const stageMap = new Map<string, number[]>();
+  for (const d of dealAges) {
+    if (!stageMap.has(d.stage)) stageMap.set(d.stage, []);
+    stageMap.get(d.stage)!.push(d.ageMonths);
+  }
+  const total = dealAges.length;
+  const atRiskTable = Array.from(stageMap.entries()).map(([stage, ages]) => {
+    const sorted = [...ages].sort((a, b) => a - b);
+    const median = sorted.length % 2 === 0
+      ? (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+      : sorted[Math.floor(sorted.length / 2)];
+    return {
+      stage,
+      count: ages.length,
+      medianAge: Math.round(median * 10) / 10,
+      pctAtRisk: Math.round((ages.length / total) * 1000) / 1000,
+    };
+  }).sort((a, b) => b.count - a.count);
+
+  return { kmCurve, medianSurvival, meanSurvival, atRiskTable };
+}

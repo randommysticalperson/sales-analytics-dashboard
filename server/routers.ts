@@ -32,6 +32,8 @@ import {
   updateStageProbability,
   getMonthlyDealCounts,
   getWinsLossesCount,
+  getRepDealCounts,
+  getDealAgeInStage,
 } from "./db";
 import {
   boltzmannGibbs,
@@ -44,6 +46,8 @@ import {
   poissonDealArrival,
   geometricSalesCycle,
   bayesianWinRate,
+  perRepPoisson,
+  survivalHazard,
 } from "./econophysics";
 
 export const appRouter = router({
@@ -308,13 +312,15 @@ export const appRouter = router({
   // ─── Econophysics Analytics ───────────────────────────────────────────────
   econophysics: router({
     full: protectedProcedure.query(async () => {
-      const [closedWonValues, allDeals, repRevenues, monthlySeries, monthlyDealCounts, winsLosses] = await Promise.all([
+      const [closedWonValues, allDeals, repRevenues, monthlySeries, monthlyDealCounts, winsLosses, repDealCounts, dealAges] = await Promise.all([
         getClosedWonDealValues(),
         getAllDealValues(),
         getRepRevenueForEntropy(),
         getMonthlyRevenueSeries(),
         getMonthlyDealCounts(),
         getWinsLossesCount(),
+        getRepDealCounts(),
+        getDealAgeInStage(),
       ]);
 
       const bg = boltzmannGibbs(closedWonValues);
@@ -347,7 +353,8 @@ export const appRouter = router({
           stageWinRate: stageProbMap[stage] ?? 0.1,
         }));
       const bayesData = bayesianWinRate(winsLosses.wins, winsLosses.losses, 1, 1, stageDecomp);
-
+      const repPoissonData = perRepPoisson(repDealCounts);
+      const survivalData = survivalHazard(dealAges);
       return {
         boltzmannGibbs: bg,
         gini: giniData,
@@ -370,6 +377,8 @@ export const appRouter = router({
         poissonArrival: poissonData,
         geometricCycle: geoData,
         bayesianWinRate: bayesData,
+        repPoisson: repPoissonData,
+        survival: survivalData,
       };
     }),
   }),

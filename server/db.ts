@@ -766,3 +766,56 @@ export async function getWinsLossesCount(): Promise<{ wins: number; losses: numb
   const r = (result as any[])[0];
   return { wins: Number(r.wins ?? 0), losses: Number(r.losses ?? 0), totalPeriods: Number(r.totalPeriods ?? 0) };
 }
+
+/** Returns per-rep monthly deal counts for Poisson λ breakdown */
+export async function getRepDealCounts(): Promise<{ repName: string; monthlyCounts: number[]; lambda: number }[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.execute(sql`
+    SELECT
+      sr.name AS repName,
+      DATE_FORMAT(d.actualCloseDate, '%Y-%m') AS month,
+      COUNT(*) AS dealCount
+    FROM deals d
+    JOIN sales_reps sr ON d.assignedRepId = sr.id
+    WHERE d.stage = 'closed_won' AND d.actualCloseDate IS NOT NULL
+    GROUP BY sr.name, DATE_FORMAT(d.actualCloseDate, '%Y-%m')
+    ORDER BY sr.name, month ASC
+  `);
+  const result = Array.isArray(rows) ? rows[0] : rows;
+  if (!Array.isArray(result)) return [];
+
+  // Group by rep
+  const repMap = new Map<string, number[]>();
+  for (const r of result as any[]) {
+    const name = String(r.repName);
+    if (!repMap.has(name)) repMap.set(name, []);
+    repMap.get(name)!.push(Number(r.dealCount));
+  }
+
+  return Array.from(repMap.entries()).map(([repName, counts]) => {
+    const lambda = counts.length > 0 ? Math.round((counts.reduce((s, c) => s + c, 0) / counts.length) * 100) / 100 : 0;
+    return { repName, monthlyCounts: counts, lambda };
+  }).sort((a, b) => b.lambda - a.lambda);
+}
+
+/** Returns deal age-in-stage data for survival/hazard analysis */
+export async function getDealAgeInStage(): Promise<{ stage: string; ageMonths: number; isEvent: boolean }[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.execute(sql`
+    SELECT
+      stage,
+      TIMESTAMPDIFF(MONTH, createdAt, COALESCE(actualCloseDate, NOW())) AS ageMonths,
+      CASE WHEN stage IN ('closed_won', 'closed_lost') THEN 1 ELSE 0 END AS isEvent
+    FROM deals
+    WHERE createdAt IS NOT NULL
+  `);
+  const result = Array.isArray(rows) ? rows[0] : rows;
+  if (!Array.isArray(result)) return [];
+  return (result as any[]).map(r => ({
+    stage: String(r.stage),
+    ageMonths: Math.max(0, Number(r.ageMonths ?? 0)),
+    isEvent: Number(r.isEvent) === 1,
+  }));
+}

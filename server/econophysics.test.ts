@@ -10,6 +10,8 @@ import {
   poissonDealArrival,
   geometricSalesCycle,
   bayesianWinRate,
+  perRepPoisson,
+  survivalHazard,
 } from "./econophysics";
 
 // ─── Gini Coefficient & Lorenz Curve ─────────────────────────────────────────
@@ -392,5 +394,126 @@ describe("bayesianWinRate", () => {
     const result = bayesianWinRate(10, 0, 1, 1);
     expect(result.posteriorMean).toBeGreaterThan(0.5);
     expect(result.posteriorMean).toBeLessThanOrEqual(1);
+  });
+});
+
+// ─── 12. perRepPoisson ────────────────────────────────────────────────────────────────────────────────
+describe("perRepPoisson", () => {
+  it("returns empty result for empty input", () => {
+    const r = perRepPoisson([]);
+    expect(r.reps).toHaveLength(0);
+    expect(r.totalLambda).toBe(0);
+    expect(r.topRep).toBe("");
+    expect(r.lambdaCV).toBe(0);
+  });
+
+  it("computes lambda, mode, and share for a single rep", () => {
+    const r = perRepPoisson([{ repName: "Alice", monthlyCounts: [3, 4, 5], lambda: 4 }]);
+    expect(r.reps).toHaveLength(1);
+    expect(r.reps[0].lambda).toBe(4);
+    expect(r.reps[0].share).toBe(1);
+    expect(r.reps[0].mode).toBe(4);
+    expect(r.totalLambda).toBe(4);
+    expect(r.topRep).toBe("Alice");
+    expect(r.bottomRep).toBe("Alice");
+  });
+
+  it("sorts reps by lambda descending and computes CV", () => {
+    const reps = [
+      { repName: "Bob", monthlyCounts: [1, 2], lambda: 1 },
+      { repName: "Alice", monthlyCounts: [5, 6, 7], lambda: 6 },
+    ];
+    const r = perRepPoisson(reps);
+    expect(r.topRep).toBe("Alice");
+    expect(r.bottomRep).toBe("Bob");
+    expect(r.totalLambda).toBe(7);
+    expect(r.lambdaCV).toBeGreaterThan(0);
+  });
+
+  it("ci90Low <= mode <= ci90High for reps with lambda >= 2", () => {
+    // For Poisson(lambda), mode = floor(lambda). For lambda < 1, mode=0 but
+    // the 5th percentile can be > 0 (e.g. Poisson(1): P(0)=0.368 > 0.05 so
+    // ci90Low=1 > mode=0). We test only reps with lambda >= 2 to avoid this edge.
+    const reps = [
+      { repName: "Alice", monthlyCounts: [3, 4, 5], lambda: 4 },
+      { repName: "Carol", monthlyCounts: [2, 2, 2], lambda: 2 },
+    ];
+    const r = perRepPoisson(reps);
+    for (const rep of r.reps) {
+      expect(rep.ci90Low).toBeLessThanOrEqual(rep.mode);
+      expect(rep.mode).toBeLessThanOrEqual(rep.ci90High);
+    }
+  });
+
+  it("shares sum to approximately 1", () => {
+    const reps = [
+      { repName: "A", monthlyCounts: [2], lambda: 2 },
+      { repName: "B", monthlyCounts: [3], lambda: 3 },
+      { repName: "C", monthlyCounts: [5], lambda: 5 },
+    ];
+    const r = perRepPoisson(reps);
+    const totalShare = r.reps.reduce((s, rep) => s + rep.share, 0);
+    expect(totalShare).toBeCloseTo(1, 2);
+  });
+});
+
+// ─── 13. survivalHazard ────────────────────────────────────────────────────────────────────────────────
+describe("survivalHazard", () => {
+  it("returns empty result for empty input", () => {
+    const r = survivalHazard([]);
+    expect(r.kmCurve).toHaveLength(0);
+    expect(r.medianSurvival).toBe(0);
+    expect(r.meanSurvival).toBe(0);
+    expect(r.atRiskTable).toHaveLength(0);
+  });
+
+  it("survival is non-increasing", () => {
+    const deals = [
+      { stage: "closed_won", ageMonths: 2, isEvent: true },
+      { stage: "closed_won", ageMonths: 3, isEvent: true },
+      { stage: "closed_lost", ageMonths: 5, isEvent: true },
+      { stage: "negotiation", ageMonths: 4, isEvent: false },
+    ];
+    const r = survivalHazard(deals);
+    expect(r.kmCurve.length).toBeGreaterThan(0);
+    for (let i = 1; i < r.kmCurve.length; i++) {
+      expect(r.kmCurve[i].survival).toBeLessThanOrEqual(r.kmCurve[i - 1].survival);
+    }
+  });
+
+  it("survival values are between 0 and 1", () => {
+    const deals = [
+      { stage: "closed_won", ageMonths: 1, isEvent: true },
+      { stage: "closed_won", ageMonths: 2, isEvent: true },
+    ];
+    const r = survivalHazard(deals);
+    for (const entry of r.kmCurve) {
+      expect(entry.survival).toBeGreaterThanOrEqual(0);
+      expect(entry.survival).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("atRiskTable groups by stage correctly", () => {
+    const deals = [
+      { stage: "lead", ageMonths: 1, isEvent: false },
+      { stage: "lead", ageMonths: 2, isEvent: false },
+      { stage: "closed_won", ageMonths: 3, isEvent: true },
+    ];
+    const r = survivalHazard(deals);
+    const leadRow = r.atRiskTable.find(row => row.stage === "lead");
+    expect(leadRow).toBeDefined();
+    expect(leadRow!.count).toBe(2);
+    const wonRow = r.atRiskTable.find(row => row.stage === "closed_won");
+    expect(wonRow).toBeDefined();
+    expect(wonRow!.count).toBe(1);
+  });
+
+  it("meanSurvival is non-negative", () => {
+    const deals = [
+      { stage: "closed_won", ageMonths: 2, isEvent: true },
+      { stage: "negotiation", ageMonths: 6, isEvent: false },
+    ];
+    const r = survivalHazard(deals);
+    expect(r.meanSurvival).toBeGreaterThanOrEqual(0);
   });
 });

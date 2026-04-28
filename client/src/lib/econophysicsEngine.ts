@@ -650,3 +650,256 @@ export const DEFAULT_ACTUARIAL_PARAMS: ActuarialWhatIfParams = {
   bayesPriorAlpha: 1,
   bayesPriorBeta: 1,
 };
+
+// ─── 12. Per-Rep Poisson λ Breakdown ─────────────────────────────────────────
+// Ref: Finan PV2020 §7.4
+
+export interface RepPoissonEntry {
+  repName: string;
+  lambda: number;
+  mode: number;
+  ci90Low: number;
+  ci90High: number;
+  variance: number;
+  share: number;
+}
+
+export interface RepPoissonResult {
+  reps: RepPoissonEntry[];
+  totalLambda: number;
+  topRep: string;
+  bottomRep: string;
+  lambdaCV: number;
+}
+
+export function perRepPoisson(repData: { repName: string; monthlyCounts: number[]; lambda: number }[]): RepPoissonResult {
+  if (repData.length === 0) {
+    return { reps: [], totalLambda: 0, topRep: "", bottomRep: "", lambdaCV: 0 };
+  }
+
+  const totalLambda = repData.reduce((s, r) => s + r.lambda, 0);
+
+  function logFactorial(n: number): number {
+    if (n <= 1) return 0;
+    let s = 0;
+    for (let i = 2; i <= n; i++) s += Math.log(i);
+    return s;
+  }
+
+  const reps: RepPoissonEntry[] = repData.map(r => {
+    const lam = Math.max(0.01, r.lambda);
+    const kMax = Math.max(20, Math.ceil(lam * 4));
+    let modeK = 0, modeProb = 0;
+    let cumulative = 0;
+    let ci90Low = 0, ci90High = kMax;
+    for (let k = 0; k <= kMax; k++) {
+      const logP = k * Math.log(lam) - lam - logFactorial(k);
+      const p = Math.exp(logP);
+      cumulative = Math.min(1, cumulative + p);
+      if (p > modeProb) { modeProb = p; modeK = k; }
+      if (cumulative >= 0.05 && ci90Low === 0) ci90Low = k;
+      if (cumulative >= 0.95 && ci90High === kMax) ci90High = k;
+    }
+    return {
+      repName: r.repName,
+      lambda: Math.round(lam * 100) / 100,
+      mode: modeK,
+      ci90Low,
+      ci90High,
+      variance: Math.round(lam * 100) / 100,
+      share: totalLambda > 0 ? Math.round((lam / totalLambda) * 1000) / 1000 : 0,
+    };
+  });
+
+  const sorted = [...reps].sort((a, b) => b.lambda - a.lambda);
+  const mean = totalLambda / reps.length;
+  const variance = reps.reduce((s, r) => s + (r.lambda - mean) ** 2, 0) / reps.length;
+  const lambdaCV = mean > 0 ? Math.round((Math.sqrt(variance) / mean) * 1000) / 1000 : 0;
+
+  return {
+    reps,
+    totalLambda: Math.round(totalLambda * 100) / 100,
+    topRep: sorted[0]?.repName ?? "",
+    bottomRep: sorted[sorted.length - 1]?.repName ?? "",
+    lambdaCV,
+  };
+}
+
+// ─── 13. Survival / Hazard Function for Deal Age-in-Stage ────────────────────
+// Kaplan-Meier estimator: S(t) = Π_{t_i ≤ t} (1 − d_i / n_i)
+// Ref: Finan PV2020 §13
+
+export interface KMEntry {
+  t: number;
+  survival: number;
+  hazard: number;
+  atRisk: number;
+  events: number;
+}
+
+export interface AtRiskEntry {
+  stage: string;
+  count: number;
+  medianAge: number;
+  pctAtRisk: number;
+}
+
+export interface SurvivalResult {
+  kmCurve: KMEntry[];
+  medianSurvival: number;
+  meanSurvival: number;
+  atRiskTable: AtRiskEntry[];
+}
+
+export function survivalHazard(dealAges: { stage: string; ageMonths: number; isEvent: boolean }[]): SurvivalResult {
+  if (dealAges.length === 0) {
+    return { kmCurve: [], medianSurvival: 0, meanSurvival: 0, atRiskTable: [] };
+  }
+
+  const maxT = Math.max(...dealAges.map(d => d.ageMonths), 1);
+  const kmCurve: KMEntry[] = [];
+  let S = 1;
+
+  for (let t = 0; t <= maxT; t++) {
+    const atRisk = dealAges.filter(d => d.ageMonths >= t).length;
+    const died = dealAges.filter(d => d.ageMonths === t && d.isEvent).length;
+    if (atRisk === 0) continue;
+    const h = died / atRisk;
+    S = S * (1 - h);
+    kmCurve.push({ t, survival: Math.round(S * 1000) / 1000, hazard: Math.round(h * 1000) / 1000, atRisk, events: died });
+  }
+
+  const medianEntry = kmCurve.find(e => e.survival <= 0.5);
+  const medianSurvival = medianEntry?.t ?? maxT;
+
+  let meanSurvival = 0;
+  for (let i = 1; i < kmCurve.length; i++) {
+    const dt = kmCurve[i].t - kmCurve[i - 1].t;
+    meanSurvival += kmCurve[i - 1].survival * dt;
+  }
+
+  const stageMap = new Map<string, number[]>();
+  for (const d of dealAges) {
+    if (!stageMap.has(d.stage)) stageMap.set(d.stage, []);
+    stageMap.get(d.stage)!.push(d.ageMonths);
+  }
+  const total = dealAges.length;
+  const atRiskTable: AtRiskEntry[] = Array.from(stageMap.entries()).map(([stage, ages]) => {
+    const sorted = [...ages].sort((a, b) => a - b);
+    const median = sorted.length % 2 === 0
+      ? ((sorted[sorted.length / 2 - 1] ?? 0) + (sorted[sorted.length / 2] ?? 0)) / 2
+      : sorted[Math.floor(sorted.length / 2)] ?? 0;
+    return { stage, count: ages.length, medianAge: Math.round(median * 10) / 10, pctAtRisk: Math.round((ages.length / total) * 1000) / 1000 };
+  }).sort((a, b) => b.count - a.count);
+
+  return { kmCurve, medianSurvival, meanSurvival: Math.round(meanSurvival * 10) / 10, atRiskTable };
+}
+
+// ─── 14. Bayesian Prior Calibration ──────────────────────────────────────────
+// Converts a plain-English belief (win rate + confidence) into Beta(α, β) parameters.
+// Method of moments: α = μ·κ,  β = (1−μ)·κ  where κ = concentration (effective sample size)
+// Confidence levels map to κ: low=5, medium=20, high=50, very_high=100
+
+export type ConfidenceLevel = "low" | "medium" | "high" | "very_high";
+
+export interface BayesPriorCalibrationResult {
+  alpha: number;
+  beta: number;
+  priorMean: number;
+  priorMode: number;
+  ci90Low: number;
+  ci90High: number;
+  concentration: number;
+  curve: { p: number; density: number }[];
+}
+
+const CONCENTRATION_MAP: Record<ConfidenceLevel, number> = {
+  low: 5,
+  medium: 20,
+  high: 50,
+  very_high: 100,
+};
+
+export function bayesPriorCalibration(
+  beliefWinRate: number,   // 0–1, e.g. 0.30 for "I believe ~30% win rate"
+  confidence: ConfidenceLevel
+): BayesPriorCalibrationResult {
+  const mu = Math.max(0.01, Math.min(0.99, beliefWinRate));
+  const kappa = CONCENTRATION_MAP[confidence];
+  const alpha = Math.round(mu * kappa * 100) / 100;
+  const beta = Math.round((1 - mu) * kappa * 100) / 100;
+
+  // Reuse betaPDF and betaQuantile from bayesianWinRate closure — inline here
+  function logGamma(n: number): number {
+    if (n <= 0) return 0;
+    if (n < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * n)) - logGamma(1 - n);
+    let x = n - 1;
+    const coeffs = [76.18009172947146, -86.50532032941677, 24.01409824083091,
+      -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
+    let ser = 1.000000000190015;
+    for (const c of coeffs) { x++; ser += c / x; }
+    return (n + 0.5) * Math.log(n + 5.5) - (n + 5.5) + Math.log(2.5066282746310005 * ser / n);
+  }
+
+  function betaPDF(x: number, a: number, b: number): number {
+    if (x <= 0 || x >= 1) return 0;
+    const logB = logGamma(a) + logGamma(b) - logGamma(a + b);
+    return Math.exp((a - 1) * Math.log(x) + (b - 1) * Math.log(1 - x) - logB);
+  }
+
+  function regularisedIncompleteBeta(x: number, a: number, b: number): number {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    if (x > (a + 1) / (a + b + 2)) return 1 - regularisedIncompleteBeta(1 - x, b, a);
+    const logBeta = logGamma(a) + logGamma(b) - logGamma(a + b);
+    const front = Math.exp(a * Math.log(x) + b * Math.log(1 - x) - logBeta) / a;
+    let f = 1, C = 1, D = 1 - (a + b) * x / (a + 1);
+    if (Math.abs(D) < 1e-30) D = 1e-30;
+    D = 1 / D; f = D;
+    for (let m = 1; m <= 200; m++) {
+      let d = m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m));
+      D = 1 + d * D; if (Math.abs(D) < 1e-30) D = 1e-30; D = 1 / D;
+      C = 1 + d / C; if (Math.abs(C) < 1e-30) C = 1e-30;
+      f *= C * D;
+      d = -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1));
+      D = 1 + d * D; if (Math.abs(D) < 1e-30) D = 1e-30; D = 1 / D;
+      C = 1 + d / C; if (Math.abs(C) < 1e-30) C = 1e-30;
+      const delta = C * D; f *= delta;
+      if (Math.abs(delta - 1) < 1e-10) break;
+    }
+    return front * f;
+  }
+
+  function betaQuantile(p: number, a: number, b: number): number {
+    let x = a / (a + b);
+    for (let iter = 0; iter < 50; iter++) {
+      const fx = regularisedIncompleteBeta(x, a, b) - p;
+      const dfx = betaPDF(x, a, b);
+      if (Math.abs(dfx) < 1e-12) break;
+      const dx = fx / dfx;
+      x = Math.max(1e-6, Math.min(1 - 1e-6, x - dx));
+      if (Math.abs(dx) < 1e-8) break;
+    }
+    return x;
+  }
+
+  const priorMean = alpha / (alpha + beta);
+  const priorMode = alpha > 1 && beta > 1 ? (alpha - 1) / (alpha + beta - 2) : (alpha >= beta ? 1 : 0);
+  const ci90Low = betaQuantile(0.05, alpha, beta);
+  const ci90High = betaQuantile(0.95, alpha, beta);
+  const curve = Array.from({ length: 101 }, (_, i) => i / 100).map(p => ({
+    p,
+    density: Math.round(betaPDF(p, alpha, beta) * 1000) / 1000,
+  }));
+
+  return {
+    alpha,
+    beta,
+    priorMean: Math.round(priorMean * 1000) / 1000,
+    priorMode: Math.round(priorMode * 1000) / 1000,
+    ci90Low: Math.round(ci90Low * 1000) / 1000,
+    ci90High: Math.round(ci90High * 1000) / 1000,
+    concentration: kappa,
+    curve,
+  };
+}

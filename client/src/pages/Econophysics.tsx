@@ -29,6 +29,10 @@ import {
   poissonDealArrival as computePoisson,
   geometricSalesCycle as computeGeometric,
   bayesianWinRate as computeBayes,
+  perRepPoisson as computeRepPoisson,
+  survivalHazard as computeSurvival,
+  bayesPriorCalibration,
+  type ConfidenceLevel,
   WhatIfParams,
   ActuarialWhatIfParams,
   DEFAULT_STAGE_PROBS,
@@ -382,8 +386,110 @@ function MetricCard({
     </Card>
   );
 }
+// ─── Bayesian Prior Calibration Wizard ────────────────────────────────────────────────────────────────────────────────
+function BayesWizardSection() {
+  const [beliefRate, setBeliefRate] = useState(30);
+  const [confidence, setConfidence] = useState<ConfidenceLevel>("medium");
+  const calibration = useMemo(
+    () => bayesPriorCalibration(beliefRate / 100, confidence),
+    [beliefRate, confidence]
+  );
 
-// ─── Main Page ────────────────────────────────────────────────────────────────
+  const confidenceOptions: { value: ConfidenceLevel; label: string; desc: string }[] = [
+    { value: "low",       label: "Low",       desc: "~5 effective obs." },
+    { value: "medium",    label: "Medium",    desc: "~20 effective obs." },
+    { value: "high",      label: "High",      desc: "~50 effective obs." },
+    { value: "very_high", label: "Very High", desc: "~100 effective obs." },
+  ];
+
+  return (
+    <div>
+      <SectionHeader
+        title="Bayesian Prior Calibration Wizard"
+        source="Finan PV2020 §5.2 — Method of moments: α = μκ, β = (1−μ)κ"
+        description="Convert a plain-English belief about win rate and confidence into Beta(α, β) prior parameters. The concentration κ controls how strongly the prior resists updating."
+      />
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Controls */}
+        <div className="space-y-4">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">Prior Belief</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="text-xs text-muted-foreground block mb-1">Believed Win Rate: <span className="font-semibold text-foreground">{beliefRate}%</span></label>
+                <input
+                  type="range" min={1} max={99} value={beliefRate}
+                  onChange={e => setBeliefRate(Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
+                <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+                  <span>1%</span><span>50%</span><span>99%</span>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground block mb-2">Confidence Level</label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {confidenceOptions.map(opt => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setConfidence(opt.value)}
+                      className={`text-xs px-2 py-1.5 rounded border transition-colors ${
+                        confidence === opt.value
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-transparent border-border text-muted-foreground hover:border-primary/50"
+                      }`}
+                    >
+                      <div className="font-medium">{opt.label}</div>
+                      <div className="text-[10px] opacity-70">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <div className="grid grid-cols-2 gap-2">
+            <MetricCard title="α (prior wins)" value={calibration.alpha.toFixed(1)} sub={`α = ${(beliefRate/100).toFixed(2)} × κ`} icon={Target} accent tooltip="Prior successes parameter of Beta distribution." />
+            <MetricCard title="β (prior losses)" value={calibration.beta.toFixed(1)} sub={`β = ${(1-beliefRate/100).toFixed(2)} × κ`} icon={Target} tooltip="Prior failures parameter of Beta distribution." />
+            <MetricCard title="Prior Mean" value={`${(calibration.priorMean * 100).toFixed(1)}%`} sub="α/(α+β)" icon={Activity} tooltip="Expected win rate under the prior." />
+            <MetricCard title="90% Prior CI" value={`${(calibration.ci90Low*100).toFixed(0)}–${(calibration.ci90High*100).toFixed(0)}%`} sub="5th–95th percentile" icon={BarChart2} tooltip="90% of the prior probability mass falls in this range." />
+          </div>
+        </div>
+        {/* Chart */}
+        <div className="lg:col-span-2">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">Beta Prior Density — Beta({calibration.alpha.toFixed(1)}, {calibration.beta.toFixed(1)})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={260}>
+                <AreaChart data={calibration.curve}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                  <XAxis dataKey="p" tickFormatter={(v) => `${(v*100).toFixed(0)}%`} tick={{ fontSize: 10 }} label={{ value: "Win Rate p", position: "insideBottom", offset: -2, fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip formatter={(v: number) => [v.toFixed(3), "Density"]} labelFormatter={(l: number) => `p = ${(l*100).toFixed(0)}%`} />
+                  <Area type="monotone" dataKey="density" stroke="#6366f1" fill="rgba(99,102,241,0.2)" name="Prior density" dot={false} />
+                  <ReferenceLine x={calibration.priorMean} stroke="#f59e0b" strokeDasharray="4 2" label={{ value: `Mean ${(calibration.priorMean*100).toFixed(0)}%`, fontSize: 9, fill: "#f59e0b" }} />
+                  {calibration.priorMode > 0 && calibration.priorMode < 1 && (
+                    <ReferenceLine x={calibration.priorMode} stroke="#10b981" strokeDasharray="4 2" label={{ value: `Mode ${(calibration.priorMode*100).toFixed(0)}%`, fontSize: 9, fill: "#10b981" }} />
+                  )}
+                </AreaChart>
+              </ResponsiveContainer>
+              <div className="mt-3 p-3 bg-muted/30 rounded-lg text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">How to use: </span>
+                Copy α₀ = <span className="font-mono text-primary">{calibration.alpha.toFixed(1)}</span> and β₀ = <span className="font-mono text-primary">{calibration.beta.toFixed(1)}</span> into the What-if Panel → Bayesian sliders to seed the Bayesian Win-Rate Updater with your prior belief.
+                Concentration κ = <span className="font-mono">{calibration.concentration}</span> means the prior is equivalent to having observed {calibration.concentration} historical deals.
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────────────────────
 export default function Econophysics() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -433,6 +539,8 @@ export default function Econophysics() {
   const serverPoissonArrival = (data as any)?.poissonArrival;
   const serverGeometricCycle = (data as any)?.geometricCycle;
   const serverBayesianWinRate = (data as any)?.bayesianWinRate;
+  const serverRepPoisson = (data as any)?.repPoisson;
+  const serverSurvival = (data as any)?.survival;
 
   // ── Actuarial model computations ────────────────────────────────────────────
   const wiPoisson = useMemo(() =>
@@ -1009,6 +1117,122 @@ export default function Econophysics() {
               <MetricCard title="P(Win) — Total Probability" value={`${(displayBayes.totalProbabilityWin * 100).toFixed(1)}%`} sub="P(Win) = Σ P(Win|Stage)·P(Stage)" icon={Sigma} accent tooltip="Law of Total Probability decomposition across pipeline stages." />
             </div>
           </div>
+
+          {/* ── Section 9: Per-Rep Poisson λ Breakdown ── */}
+          <div>
+            <SectionHeader
+              title="Per-Rep Poisson λ Breakdown"
+              source="Finan PV2020 §7.4 — Each rep modelled as independent Poisson process"
+              description="λᵢ = mean monthly closed-won deals for rep i. Reps with high λ drive deal volume; CV measures dispersion across the team."
+            />
+            {serverRepPoisson && serverRepPoisson.reps && serverRepPoisson.reps.length > 0 ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-3 gap-3">
+                  <MetricCard title="Team Total λ" value={`${serverRepPoisson.totalLambda} deals/mo`} sub="Sum of all rep arrival rates" icon={Activity} accent tooltip="Total expected deals per month across all reps." />
+                  <MetricCard title="Top Contributor" value={serverRepPoisson.topRep} sub={`λ = ${serverRepPoisson.reps.find((r: any) => r.repName === serverRepPoisson.topRep)?.lambda ?? 0}`} icon={TrendingUp} tooltip="Rep with the highest monthly deal arrival rate." />
+                  <MetricCard title="λ Dispersion (CV)" value={`${(serverRepPoisson.lambdaCV * 100).toFixed(1)}%`} sub="Coefficient of variation across reps" icon={BarChart2} tooltip="CV = σ(λ)/μ(λ). High CV means deal volume is concentrated in a few reps." />
+                </div>
+                <Card>
+                  <CardContent className="pt-4">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-border">
+                            <th className="text-left py-2 pr-4 font-medium text-muted-foreground">Rep</th>
+                            <th className="text-right py-2 pr-4 font-medium text-muted-foreground">λ (deals/mo)</th>
+                            <th className="text-right py-2 pr-4 font-medium text-muted-foreground">Mode</th>
+                            <th className="text-right py-2 pr-4 font-medium text-muted-foreground">90% CI</th>
+                            <th className="text-right py-2 font-medium text-muted-foreground">Team Share</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border/50">
+                          {[...serverRepPoisson.reps].sort((a: any, b: any) => b.lambda - a.lambda).map((rep: any) => (
+                            <tr key={rep.repName}>
+                              <td className="py-2 pr-4 font-medium">{rep.repName}</td>
+                              <td className="py-2 pr-4 text-right tabular-nums">{rep.lambda}</td>
+                              <td className="py-2 pr-4 text-right tabular-nums">{rep.mode}</td>
+                              <td className="py-2 pr-4 text-right tabular-nums">[{rep.ci90Low}, {rep.ci90High}]</td>
+                              <td className="py-2 text-right tabular-nums">
+                                <div className="flex items-center justify-end gap-2">
+                                  <div className="w-16 bg-muted rounded-full h-1.5">
+                                    <div className="bg-primary h-1.5 rounded-full" style={{ width: `${Math.min(100, rep.share * 100)}%` }} />
+                                  </div>
+                                  <span>{(rep.share * 100).toFixed(1)}%</span>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              <div className="text-sm text-muted-foreground p-4 bg-muted/30 rounded-lg">No per-rep closed-won deal data available. Add deals with assigned reps to see the Poisson breakdown.</div>
+            )}
+          </div>
+
+          {/* ── Section 10: Survival / Hazard Function for Deal Age ── */}
+          <div>
+            <SectionHeader
+              title="Deal Age Survival & Hazard Function"
+              source="Finan PV2020 §13 — Kaplan-Meier estimator: S(t) = Π(1 − dᵢ/nᵢ)"
+              description={`Kaplan-Meier survival curve across all deals. Median survival: ${serverSurvival?.medianSurvival ?? 0} months. Restricted mean: ${serverSurvival?.meanSurvival ?? 0} months. Deals still open are right-censored.`}
+            />
+            {serverSurvival && serverSurvival.kmCurve && serverSurvival.kmCurve.length > 0 ? (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="lg:col-span-2 space-y-4">
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium">Kaplan-Meier Survival Curve S(t)</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <ComposedChart data={serverSurvival.kmCurve}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                          <XAxis dataKey="t" tick={{ fontSize: 10 }} label={{ value: "Age (months)", position: "insideBottom", offset: -2, fontSize: 10 }} />
+                          <YAxis tick={{ fontSize: 10 }} domain={[0, 1]} tickFormatter={(v) => `${(v * 100).toFixed(0)}%`} />
+                          <Tooltip formatter={(v: number, name: string) => [name === 'survival' ? `${(v * 100).toFixed(1)}%` : v.toFixed(3), name === 'survival' ? 'S(t)' : 'h(t)']} labelFormatter={(l) => `Month ${l}`} />
+                          <Legend />
+                          <Area type="stepAfter" dataKey="survival" stroke="#6366f1" fill="rgba(99,102,241,0.15)" name="S(t)" dot={false} />
+                          <Line type="stepAfter" dataKey="hazard" stroke="#f59e0b" dot={false} name="h(t)" strokeDasharray="4 2" />
+                          <ReferenceLine x={serverSurvival.medianSurvival} stroke="#10b981" strokeDasharray="4 2" label={{ value: `Median: ${serverSurvival.medianSurvival}mo`, fontSize: 9, fill: "#10b981" }} />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </CardContent>
+                  </Card>
+                </div>
+                <div className="space-y-3">
+                  <MetricCard title="Median Survival" value={`${serverSurvival.medianSurvival} months`} sub="t where S(t) first ≤ 50%" icon={Activity} accent tooltip="Half of all deals close or are lost within this many months." />
+                  <MetricCard title="Restricted Mean" value={`${serverSurvival.meanSurvival} months`} sub="Area under KM curve" icon={Sigma} tooltip="Expected deal age weighted by the survival function." />
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-xs font-medium text-muted-foreground">At-Risk by Stage</CardTitle>
+                    </CardHeader>
+                    <CardContent className="pt-0">
+                      <div className="space-y-1.5">
+                        {serverSurvival.atRiskTable.slice(0, 6).map((row: any) => (
+                          <div key={row.stage} className="flex items-center justify-between text-xs">
+                            <span className="text-muted-foreground truncate max-w-[100px]">{STAGE_LABELS[row.stage] ?? row.stage}</span>
+                            <div className="flex items-center gap-2">
+                              <span className="tabular-nums">{row.medianAge}mo</span>
+                              <Badge variant="outline" className="text-[10px] py-0">{row.count}</Badge>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-muted-foreground p-4 bg-muted/30 rounded-lg">No deal age data available for survival analysis. Add deals with creation dates to see the Kaplan-Meier curve.</div>
+            )}
+          </div>
+
+          {/* ── Section 11: Bayesian Prior Calibration Wizard ── */}
+          <BayesWizardSection />
 
           {/* ── Model Reference Table ── */}
           <Card>

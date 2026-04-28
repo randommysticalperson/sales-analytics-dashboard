@@ -117,3 +117,9 @@
 - [x] Extend WhatIfPanel with sliders for three new actuarial models
 - [x] Add three new models to methodology modal PDF links section
 - [x] Write Vitest tests for three new actuarial model functions
+
+## Follow-up Actuarial Features (Round 2)
+
+- [ ] Per-rep Poisson λ breakdown: DB helper getRepDealCounts, tRPC procedure, engine function, UI table below Poisson PMF chart
+- [ ] Survival/hazard function for deal age-in-stage: DB helper getDealAgeInStage, engine survivalHazard function, KM-style chart + at-risk table
+- [ ] Bayesian prior calibration wizard: modal with belief win-rate + confidence inputs, Beta parameter conversion, live posterior preview, "Apply" button updates WhatIfPanel sliders
