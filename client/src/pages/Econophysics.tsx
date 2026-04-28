@@ -387,13 +387,58 @@ function MetricCard({
   );
 }
 // ─── Bayesian Prior Calibration Wizard ────────────────────────────────────────────────────────────────────────────────
-function BayesWizardSection() {
+function BayesWizardSection({
+  onApply,
+  wins = 0,
+  losses = 0,
+}: {
+  onApply?: (alpha: number, beta: number) => void;
+  wins?: number;
+  losses?: number;
+}) {
   const [beliefRate, setBeliefRate] = useState(30);
   const [confidence, setConfidence] = useState<ConfidenceLevel>("medium");
+  const [applied, setApplied] = useState(false);
+
   const calibration = useMemo(
     () => bayesPriorCalibration(beliefRate / 100, confidence),
     [beliefRate, confidence]
   );
+
+  // Live posterior: update prior with observed wins/losses
+  const posteriorAlpha = calibration.alpha + wins;
+  const posteriorBeta = calibration.beta + losses;
+  const posteriorMean = posteriorAlpha / (posteriorAlpha + posteriorBeta);
+  const posteriorCurve = useMemo(() => {
+    const pts: { p: number; prior: number; posterior: number }[] = [];
+    for (let i = 0; i <= 100; i++) {
+      const p = i / 100;
+      const priorDensity = calibration.curve[i]?.density ?? 0;
+      // Beta PDF: p^(a-1) * (1-p)^(b-1) / B(a,b) — approximate via ratio
+      const logB = (a: number, b: number) => {
+        const logGamma = (n: number): number => {
+          if (n < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * n)) - logGamma(1 - n);
+          n -= 1;
+          let x = 0.99999999999980993;
+          const c = [676.5203681218851,-1259.1392167224028,771.32342877765313,-176.61502916214059,12.507343278686905,-0.13857109526572012,9.9843695780195716e-6,1.5056327351493116e-7];
+          for (let k = 0; k < 8; k++) x += c[k]! / (n + k + 1);
+          const t = n + 7.5;
+          return 0.5 * Math.log(2 * Math.PI) + (n + 0.5) * Math.log(t) - t + Math.log(x);
+        };
+        return logGamma(a) + logGamma(b) - logGamma(a + b);
+      };
+      const postDensity = p === 0 || p === 1 ? 0 :
+        Math.exp((posteriorAlpha - 1) * Math.log(p) + (posteriorBeta - 1) * Math.log(1 - p) - logB(posteriorAlpha, posteriorBeta));
+      pts.push({ p, prior: priorDensity, posterior: isFinite(postDensity) ? postDensity : 0 });
+    }
+    return pts;
+  }, [calibration, posteriorAlpha, posteriorBeta]);
+
+  const handleApply = () => {
+    onApply?.(calibration.alpha, calibration.beta);
+    setApplied(true);
+    setTimeout(() => setApplied(false), 2000);
+  };
 
   const confidenceOptions: { value: ConfidenceLevel; label: string; desc: string }[] = [
     { value: "low",       label: "Low",       desc: "~5 effective obs." },
@@ -456,30 +501,42 @@ function BayesWizardSection() {
             <MetricCard title="90% Prior CI" value={`${(calibration.ci90Low*100).toFixed(0)}–${(calibration.ci90High*100).toFixed(0)}%`} sub="5th–95th percentile" icon={BarChart2} tooltip="90% of the prior probability mass falls in this range." />
           </div>
         </div>
-        {/* Chart */}
-        <div className="lg:col-span-2">
+        {/* Chart + Apply */}
+        <div className="lg:col-span-2 space-y-3">
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium">Beta Prior Density — Beta({calibration.alpha.toFixed(1)}, {calibration.beta.toFixed(1)})</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm font-medium">Prior vs. Live Posterior — Beta(α₀={calibration.alpha.toFixed(1)}, β₀={calibration.beta.toFixed(1)})</CardTitle>
+                <button
+                  onClick={handleApply}
+                  className={`text-xs px-3 py-1.5 rounded font-medium transition-all ${
+                    applied
+                      ? "bg-green-500/20 text-green-400 border border-green-500/40"
+                      : "bg-primary text-primary-foreground hover:bg-primary/90"
+                  }`}
+                >
+                  {applied ? "✓ Applied to What-if" : "Apply to What-if Panel"}
+                </button>
+              </div>
             </CardHeader>
             <CardContent>
               <ResponsiveContainer width="100%" height={260}>
-                <AreaChart data={calibration.curve}>
+                <AreaChart data={posteriorCurve}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
                   <XAxis dataKey="p" tickFormatter={(v) => `${(v*100).toFixed(0)}%`} tick={{ fontSize: 10 }} label={{ value: "Win Rate p", position: "insideBottom", offset: -2, fontSize: 10 }} />
                   <YAxis tick={{ fontSize: 10 }} />
-                  <Tooltip formatter={(v: number) => [v.toFixed(3), "Density"]} labelFormatter={(l: number) => `p = ${(l*100).toFixed(0)}%`} />
-                  <Area type="monotone" dataKey="density" stroke="#6366f1" fill="rgba(99,102,241,0.2)" name="Prior density" dot={false} />
-                  <ReferenceLine x={calibration.priorMean} stroke="#f59e0b" strokeDasharray="4 2" label={{ value: `Mean ${(calibration.priorMean*100).toFixed(0)}%`, fontSize: 9, fill: "#f59e0b" }} />
-                  {calibration.priorMode > 0 && calibration.priorMode < 1 && (
-                    <ReferenceLine x={calibration.priorMode} stroke="#10b981" strokeDasharray="4 2" label={{ value: `Mode ${(calibration.priorMode*100).toFixed(0)}%`, fontSize: 9, fill: "#10b981" }} />
-                  )}
+                  <Tooltip formatter={(v: number, name: string) => [v.toFixed(3), name === 'prior' ? 'Prior density' : 'Posterior density']} labelFormatter={(l: number) => `p = ${(l*100).toFixed(0)}%`} />
+                  <Legend />
+                  <Area type="monotone" dataKey="prior" stroke="#6366f1" fill="rgba(99,102,241,0.15)" name="Prior" dot={false} strokeDasharray="4 2" />
+                  <Area type="monotone" dataKey="posterior" stroke="#10b981" fill="rgba(16,185,129,0.15)" name="Posterior" dot={false} />
+                  <ReferenceLine x={calibration.priorMean} stroke="#6366f1" strokeDasharray="3 2" label={{ value: `Prior mean ${(calibration.priorMean*100).toFixed(0)}%`, fontSize: 9, fill: "#6366f1" }} />
+                  <ReferenceLine x={posteriorMean} stroke="#10b981" strokeDasharray="3 2" label={{ value: `Post. mean ${(posteriorMean*100).toFixed(0)}%`, fontSize: 9, fill: "#10b981" }} />
                 </AreaChart>
               </ResponsiveContainer>
               <div className="mt-3 p-3 bg-muted/30 rounded-lg text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">How to use: </span>
-                Copy α₀ = <span className="font-mono text-primary">{calibration.alpha.toFixed(1)}</span> and β₀ = <span className="font-mono text-primary">{calibration.beta.toFixed(1)}</span> into the What-if Panel → Bayesian sliders to seed the Bayesian Win-Rate Updater with your prior belief.
-                Concentration κ = <span className="font-mono">{calibration.concentration}</span> means the prior is equivalent to having observed {calibration.concentration} historical deals.
+                <span className="font-medium text-foreground">Posterior preview: </span>
+                Beta(α₀+W, β₀+L) = Beta({posteriorAlpha.toFixed(1)}, {posteriorBeta.toFixed(1)}) after {wins} wins and {losses} losses from your pipeline.
+                Click <span className="font-medium text-foreground">Apply to What-if Panel</span> to seed the Bayesian Win-Rate Updater with α₀ = <span className="font-mono text-primary">{calibration.alpha.toFixed(1)}</span>, β₀ = <span className="font-mono text-primary">{calibration.beta.toFixed(1)}</span>.
               </div>
             </CardContent>
           </Card>
@@ -1232,7 +1289,11 @@ export default function Econophysics() {
           </div>
 
           {/* ── Section 11: Bayesian Prior Calibration Wizard ── */}
-          <BayesWizardSection />
+          <BayesWizardSection
+            wins={serverBayesianWinRate?.wins ?? 0}
+            losses={serverBayesianWinRate?.losses ?? 0}
+            onApply={(alpha, beta) => setActuarialParams(prev => ({ ...prev, bayesPriorAlpha: alpha, bayesPriorBeta: beta }))}
+          />
 
           {/* ── Model Reference Table ── */}
           <Card>
